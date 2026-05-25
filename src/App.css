@@ -1,116 +1,319 @@
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafb);
-}
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  color: var(--on-surface);
+  background: var(--surface);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
 }
 
-.container {
+* {
+  box-sizing: border-box;
+}
+
+body {
   margin: 0;
-  padding-top: 10vh;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(
+      circle at top right,
+      color-mix(in srgb, var(--primary) 12%, transparent),
+      transparent 28rem
+    ),
+    var(--surface);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.quiver-shell {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  background: color-mix(in srgb, var(--surface) 96%, var(--primary));
+}
+
+.quiver-status,
+.quiver-command-actions,
+.quiver-icon-group,
+.quiver-preview__meta {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
+  align-items: center;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
+.quiver-status svg {
+  width: var(--sizing-icon-medium);
+  height: var(--sizing-icon-medium);
 }
 
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
+.quiver-status {
+  justify-content: flex-end;
+  gap: var(--spacing-gap-medium);
+  color: var(--on-surface-variant);
 }
 
-.row {
+.quiver-status svg:first-child {
+  color: var(--primary);
+}
+
+.quiver-main {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: var(--spacing-gap-large);
+  padding: var(--spacing-safe-area-padding);
+}
+
+.quiver-command-row {
+  width: min(82rem, 100%);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--spacing-gap-medium);
+  margin: 0 auto;
+}
+
+.quiver-url-panel {
+  padding: var(--spacing-gap-medium);
+  border-radius: var(--shape-radius-small);
+  background: var(--surface-container-low);
+  box-shadow: var(--elevation-panel-raised), var(--elevation-outline-subtle);
+}
+
+.quiver-url-panel .ui-toolbar-field {
+  min-height: 3.25rem;
+  background: var(--surface-container);
+}
+
+.quiver-url-panel .ui-toolbar-field__input {
+  font-size: var(--typography-title-medium-size);
+}
+
+.quiver-command-actions,
+.quiver-preview__meta {
+  gap: var(--spacing-gap-small);
+}
+
+.quiver-primary-action {
+  min-width: 9.5rem;
+}
+
+.quiver-toolbar {
   display: flex;
-  justify-content: center;
+  align-items: center;
+  gap: var(--spacing-gap-medium);
+  min-height: 3rem;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--outline-variant) 60%, transparent);
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
+.quiver-toolbar__spacer {
+  flex: 1;
 }
 
-a:hover {
-  color: #535bf2;
+.quiver-icon-group {
+  gap: 0;
+  padding: 0.25rem;
+  border-radius: var(--shape-radius-round);
+  background: var(--surface-container-low);
+  box-shadow: var(--elevation-outline-subtle);
 }
 
-h1 {
-  text-align: center;
+.quiver-icon-group .ui-button {
+  border-radius: var(--shape-radius-round);
 }
 
-input,
-button {
-  border-radius: 8px;
+.quiver-workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(18rem, 0.72fr) minmax(20rem, 0.88fr) minmax(
+      22rem,
+      1fr
+    );
+  gap: var(--spacing-gap-large);
+  align-items: start;
+}
+
+.quiver-presets,
+.quiver-inputs,
+.quiver-preview {
+  min-width: 0;
+}
+
+.quiver-section-heading {
+  display: grid;
+  gap: var(--spacing-gap-extra-small);
+  margin-bottom: var(--spacing-gap-large);
+}
+
+.quiver-preset-grid,
+.quiver-field-grid {
+  display: grid;
+  gap: var(--spacing-gap-medium);
+}
+
+.quiver-preset {
+  width: 100%;
+  min-height: 4.75rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--spacing-gap-medium);
+  padding: var(--spacing-card-padding);
   border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
+  border-radius: var(--shape-radius-small);
+  background: var(--surface-container);
+  color: var(--on-surface);
+  text-align: left;
   cursor: pointer;
+  box-shadow: var(--elevation-outline-subtle);
+  transition:
+    border-color var(--motion-duration-base) var(--motion-easing-standard),
+    background-color var(--motion-duration-base) var(--motion-easing-standard),
+    transform var(--motion-duration-base) var(--motion-easing-standard);
 }
 
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
+.quiver-preset:hover {
+  transform: var(--motion-nudge-up-small);
+  background: var(--surface-container-high);
 }
 
-input,
-button {
-  outline: none;
+.quiver-preset--active {
+  border-color: var(--primary);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
 }
 
-#greet-input {
-  margin-right: 5px;
+.quiver-preset__icon {
+  width: 2.35rem;
+  height: 2.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--shape-radius-small);
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+  color: var(--primary);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+.quiver-preset--active .quiver-preset__icon {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.quiver-preset__icon svg {
+  width: var(--sizing-icon-medium);
+  height: var(--sizing-icon-medium);
+}
+
+.quiver-preset__body {
+  min-width: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.quiver-preset__label,
+.quiver-preset__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quiver-preset__label {
+  font-weight: var(--typography-font-weight-bold);
+}
+
+.quiver-preset__meta {
+  color: var(--on-surface-variant);
+  font-size: var(--typography-label-small-size);
+  text-transform: capitalize;
+}
+
+.quiver-preset--active .quiver-preset__meta {
+  color: color-mix(in srgb, var(--on-primary-container) 76%, transparent);
+}
+
+.quiver-preview {
+  min-height: 22rem;
+}
+
+.quiver-preview .ui-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-gap-extra-small);
+}
+
+.quiver-preview .ui-pill svg {
+  width: var(--sizing-icon-small);
+  height: var(--sizing-icon-small);
+}
+
+.quiver-command-preview {
+  min-height: 14rem;
+  max-height: 32rem;
+  overflow: auto;
+  margin: var(--spacing-gap-large) 0 0;
+  padding: var(--spacing-card-padding);
+  border-radius: var(--shape-radius-small);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--outline-variant) 72%, transparent);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.quiver-command-preview code {
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
+  font-size: var(--typography-label-medium-size);
+  line-height: 1.6;
+}
+
+.quiver-empty-preview {
+  min-height: 14rem;
+  display: grid;
+  place-items: center;
+  gap: var(--spacing-gap-medium);
+  text-align: center;
+  color: var(--on-surface-variant);
+}
+
+.quiver-empty-preview svg {
+  width: 3rem;
+  height: 3rem;
+  color: var(--primary);
+}
+
+@media (max-width: 68rem) {
+  .quiver-workspace {
+    grid-template-columns: 1fr;
   }
 
-  a:hover {
-    color: #24c8db;
+  .quiver-preview {
+    min-height: 18rem;
+  }
+}
+
+@media (max-width: 48rem) {
+  .quiver-status {
+    justify-content: flex-start;
   }
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  .quiver-command-row {
+    grid-template-columns: 1fr;
   }
-  button:active {
-    background-color: #0f0f0f69;
+
+  .quiver-command-actions {
+    justify-content: stretch;
+  }
+
+  .quiver-command-actions .ui-button:not(.ui-button--icon-only) {
+    flex: 1;
   }
 }
