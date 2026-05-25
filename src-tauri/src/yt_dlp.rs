@@ -4,8 +4,11 @@ use std::{
     error::Error,
     ffi::OsStr,
     fmt,
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Arc, Mutex},
+    thread,
 };
 
 const YT_DLP_BINARY_ENV: &str = "QUIVER_YT_DLP_BINARY";
@@ -57,6 +60,13 @@ pub struct YtDlpRunner {
     binary_path: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum YtDlpOutputStream {
+    Stdout,
+    Stderr,
+}
+
 impl YtDlpRunner {
     pub fn from_environment_or_bundle() -> Result<Self, YtDlpError> {
         let candidate_paths = candidate_binary_paths();
@@ -92,6 +102,98 @@ impl YtDlpRunner {
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
+
+    pub fn run_streaming<I, S, F>(
+        &self,
+        args: I,
+        on_chunk: F,
+    ) -> Result<YtDlpCommandOutput, YtDlpError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+        F: Fn(YtDlpOutputStream, &str) + Send + Sync + 'static,
+    {
+        let mut child = Command::new(&self.binary_path)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(YtDlpError::SpawnFailed)?;
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let stdout_buffer = Arc::new(Mutex::new(String::new()));
+        let stderr_buffer = Arc::new(Mutex::new(String::new()));
+        let on_chunk = Arc::new(on_chunk);
+
+        let stdout_reader = stdout.map(|stream| {
+            spawn_stream_reader(
+                stream,
+                YtDlpOutputStream::Stdout,
+                Arc::clone(&stdout_buffer),
+                Arc::clone(&on_chunk),
+            )
+        });
+        let stderr_reader = stderr.map(|stream| {
+            spawn_stream_reader(
+                stream,
+                YtDlpOutputStream::Stderr,
+                Arc::clone(&stderr_buffer),
+                Arc::clone(&on_chunk),
+            )
+        });
+
+        let status = child.wait().map_err(YtDlpError::SpawnFailed)?;
+
+        if let Some(reader) = stdout_reader {
+            let _ = reader.join();
+        }
+        if let Some(reader) = stderr_reader {
+            let _ = reader.join();
+        }
+
+        Ok(YtDlpCommandOutput {
+            exit_code: status.code(),
+            success: status.success(),
+            stdout: read_buffer(&stdout_buffer),
+            stderr: read_buffer(&stderr_buffer),
+        })
+    }
+}
+
+fn spawn_stream_reader<R, F>(
+    mut stream: R,
+    output_stream: YtDlpOutputStream,
+    output_buffer: Arc<Mutex<String>>,
+    on_chunk: Arc<F>,
+) -> thread::JoinHandle<()>
+where
+    R: Read + Send + 'static,
+    F: Fn(YtDlpOutputStream, &str) + Send + Sync + 'static,
+{
+    thread::spawn(move || {
+        let mut buffer = [0; 4096];
+
+        while let Ok(bytes_read) = stream.read(&mut buffer) {
+            if bytes_read == 0 {
+                break;
+            }
+
+            let chunk = String::from_utf8_lossy(&buffer[..bytes_read]).into_owned();
+            if let Ok(mut collected_output) = output_buffer.lock() {
+                collected_output.push_str(&chunk);
+            }
+            on_chunk(output_stream, &chunk);
+        }
+    })
+}
+
+fn read_buffer(output_buffer: &Arc<Mutex<String>>) -> String {
+    output_buffer
+        .lock()
+        .map(|buffer| buffer.clone())
+        .unwrap_or_default()
 }
 
 fn candidate_binary_paths() -> Vec<PathBuf> {

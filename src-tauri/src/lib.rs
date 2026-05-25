@@ -3,13 +3,23 @@ mod presets;
 mod yt_dlp;
 
 use presets::{DownloadPreset, DownloadPresetInput, PresetCommandPreview, PresetId};
+use serde::Serialize;
 use std::sync::Mutex;
-use yt_dlp::{YtDlpCommandOutput, YtDlpRunner};
+use tauri::Emitter;
+use yt_dlp::{YtDlpCommandOutput, YtDlpOutputStream, YtDlpRunner};
 
 #[derive(Default)]
 struct ThemeSettings {
     mode: Mutex<String>,
     preset: Mutex<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct YtDlpOutputChunk {
+    run_id: String,
+    stream: YtDlpOutputStream,
+    chunk: String,
 }
 
 #[tauri::command]
@@ -130,19 +140,42 @@ fn set_theme_preset(
 }
 
 #[tauri::command]
-fn yt_dlp_version() -> Result<YtDlpCommandOutput, String> {
-    YtDlpRunner::from_environment_or_bundle()
-        .map_err(|error| error.to_string())?
-        .run(["--version"])
-        .map_err(|error| error.to_string())
+async fn yt_dlp_version() -> Result<YtDlpCommandOutput, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        YtDlpRunner::from_environment_or_bundle()
+            .map_err(|error| error.to_string())?
+            .run(["--version"])
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("failed to join yt-dlp version task: {error}"))?
 }
 
 #[tauri::command]
-fn run_yt_dlp(args: Vec<String>) -> Result<YtDlpCommandOutput, String> {
-    YtDlpRunner::from_environment_or_bundle()
-        .map_err(|error| error.to_string())?
-        .run(args)
-        .map_err(|error| error.to_string())
+async fn run_yt_dlp(
+    app: tauri::AppHandle,
+    run_id: String,
+    args: Vec<String>,
+) -> Result<YtDlpCommandOutput, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let emit_app = app.clone();
+        let emit_run_id = run_id.clone();
+        YtDlpRunner::from_environment_or_bundle()
+            .map_err(|error| error.to_string())?
+            .run_streaming(args, move |stream, chunk| {
+                let _ = emit_app.emit(
+                    "yt-dlp-output",
+                    YtDlpOutputChunk {
+                        run_id: emit_run_id.clone(),
+                        stream,
+                        chunk: chunk.to_string(),
+                    },
+                );
+            })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("failed to join yt-dlp task: {error}"))?
 }
 
 #[tauri::command]

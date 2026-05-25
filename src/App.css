@@ -14,17 +14,17 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background:
-    radial-gradient(
-      circle at top right,
-      color-mix(in srgb, var(--primary) 12%, transparent),
-      transparent 28rem
-    ),
-    var(--surface);
+  background: var(--surface);
 }
 
 button,
@@ -33,7 +33,7 @@ input {
 }
 
 .quiver-shell {
-  min-height: 100%;
+  min-height: 100vh;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   background: color-mix(in srgb, var(--surface) 96%, var(--primary));
@@ -42,7 +42,8 @@ input {
 .quiver-status,
 .quiver-command-actions,
 .quiver-icon-group,
-.quiver-preview__meta {
+.quiver-preview__meta,
+.quiver-output__meta {
   display: flex;
   align-items: center;
 }
@@ -96,7 +97,8 @@ input {
 }
 
 .quiver-command-actions,
-.quiver-preview__meta {
+.quiver-preview__meta,
+.quiver-output__meta {
   gap: var(--spacing-gap-small);
 }
 
@@ -142,6 +144,7 @@ input {
 
 .quiver-presets,
 .quiver-inputs,
+.quiver-preview-stack,
 .quiver-preview {
   min-width: 0;
 }
@@ -238,8 +241,13 @@ input {
   color: color-mix(in srgb, var(--on-primary-container) 76%, transparent);
 }
 
+.quiver-preview-stack {
+  display: grid;
+  gap: var(--spacing-gap-large);
+}
+
 .quiver-preview {
-  min-height: 22rem;
+  min-height: 16rem;
 }
 
 .quiver-preview .ui-pill {
@@ -254,7 +262,7 @@ input {
 }
 
 .quiver-command-preview {
-  min-height: 14rem;
+  min-height: 8rem;
   max-height: 32rem;
   overflow: auto;
   margin: var(--spacing-gap-large) 0 0;
@@ -275,8 +283,26 @@ input {
   line-height: 1.6;
 }
 
+.quiver-command-preview--output {
+  min-height: 6rem;
+  max-height: 14rem;
+}
+
+.quiver-output {
+  min-height: 12rem;
+}
+
+.quiver-output .quiver-section-heading {
+  margin-bottom: var(--spacing-gap-medium);
+}
+
+.quiver-output__meta {
+  margin-top: var(--spacing-gap-medium);
+  justify-content: flex-end;
+}
+
 .quiver-empty-preview {
-  min-height: 14rem;
+  min-height: 8rem;
   display: grid;
   place-items: center;
   gap: var(--spacing-gap-medium);
@@ -290,13 +316,17 @@ input {
   color: var(--primary);
 }
 
+.quiver-empty-preview--output {
+  min-height: 6rem;
+}
+
 @media (max-width: 68rem) {
   .quiver-workspace {
     grid-template-columns: 1fr;
   }
 
   .quiver-preview {
-    min-height: 18rem;
+    min-height: 14rem;
   }
 }
 

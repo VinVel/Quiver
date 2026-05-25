@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   Check,
   Download,
@@ -51,6 +52,12 @@ type YtDlpCommandOutput = {
   stderr: string;
 };
 
+type YtDlpOutputChunk = {
+  runId: string;
+  stream: "stdout" | "stderr";
+  chunk: string;
+};
+
 type DownloadPresetInput = {
   link: string;
   directory?: string;
@@ -70,11 +77,13 @@ function App() {
   const [downloadResult, setDownloadResult] = useState<YtDlpCommandOutput | null>(
     null,
   );
+  const [commandOutput, setCommandOutput] = useState("");
   const [activeSource, setActiveSource] = useState<PresetSource>("youTube");
   const [error, setError] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const hasPreparedPreviewRef = useRef(false);
+  const commandOutputRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,36 +127,37 @@ function App() {
   const buildPreview = useCallback(
     async (presetId = selectedPresetId) => {
       if (!presetId) {
-      setError("Choose a preset before building the command.");
-      return;
-    }
+        setError("Choose a preset before building the command.");
+        return;
+      }
 
-    setIsPreviewLoading(true);
-    setError(null);
-    setDownloadResult(null);
+      setIsPreviewLoading(true);
+      setError(null);
+      setDownloadResult(null);
+      setCommandOutput("");
 
-    const input: DownloadPresetInput = {
-      link,
-      directory,
-      cookiesPath,
-    };
+      const input: DownloadPresetInput = {
+        link,
+        directory,
+        cookiesPath,
+      };
 
-    try {
-      const nextPreview = await invoke<PresetCommandPreview>(
-        "preview_download_preset",
-        {
-          presetId,
-          input,
-        },
-      );
-      setPreview(nextPreview);
-      hasPreparedPreviewRef.current = true;
-    } catch (previewError) {
-      setPreview(null);
-      setError(errorToMessage(previewError));
-    } finally {
-      setIsPreviewLoading(false);
-    }
+      try {
+        const nextPreview = await invoke<PresetCommandPreview>(
+          "preview_download_preset",
+          {
+            presetId,
+            input,
+          },
+        );
+        setPreview(nextPreview);
+        hasPreparedPreviewRef.current = true;
+      } catch (previewError) {
+        setPreview(null);
+        setError(errorToMessage(previewError));
+      } finally {
+        setIsPreviewLoading(false);
+      }
     },
     [cookiesPath, directory, link, selectedPresetId],
   );
@@ -160,6 +170,14 @@ function App() {
     void buildPreview(selectedPresetId);
   }, [buildPreview, link, selectedPresetId]);
 
+  useEffect(() => {
+    if (!commandOutputRef.current) {
+      return;
+    }
+
+    commandOutputRef.current.scrollTop = commandOutputRef.current.scrollHeight;
+  }, [commandOutput, isDownloading]);
+
   async function runDownload() {
     if (!preview) {
       await buildPreview();
@@ -168,9 +186,28 @@ function App() {
 
     setIsDownloading(true);
     setError(null);
+    setDownloadResult(null);
+    setCommandOutput("");
+
+    const runId = createRunId();
+    let unlisten: UnlistenFn | null = null;
 
     try {
+      unlisten = await listen<YtDlpOutputChunk>(
+        "yt-dlp-output",
+        (event) => {
+          if (event.payload.runId !== runId) {
+            return;
+          }
+
+          setCommandOutput(
+            (currentOutput) => currentOutput + event.payload.chunk,
+          );
+        },
+      );
+
       const result = await invoke<YtDlpCommandOutput>("run_yt_dlp", {
+        runId,
         args: preview.args,
       });
       setDownloadResult(result);
@@ -180,11 +217,16 @@ function App() {
     } catch (downloadError) {
       setError(errorToMessage(downloadError));
     } finally {
+      unlisten?.();
       setIsDownloading(false);
     }
   }
 
   const commandText = preview ? ["yt-dlp", ...preview.args].join(" ") : "";
+  const completedOutput = downloadResult
+    ? [downloadResult.stdout, downloadResult.stderr].filter(Boolean).join("\n")
+    : "";
+  const outputText = commandOutput || completedOutput;
   const isActionBusy = isPreviewLoading || isDownloading;
   const primaryActionLabel = preview ? "Download" : "Prepare";
 
@@ -332,38 +374,83 @@ function App() {
             ) : null}
           </Panel>
 
-          <Card className="quiver-preview">
-            <div className="quiver-section-heading">
-              <Typography variant="h2">Command Preview</Typography>
-              <Typography variant="bodySmall" muted>
-                Execution will be wired after the remaining services are ready.
-              </Typography>
-            </div>
-
-            {preview ? (
-              <>
-                <div className="quiver-preview__meta">
-                  <Pill tone="primary">{preview.preset.label}</Pill>
-                  {preview.requiresPotServer ? (
-                    <Pill tone="secondary">
-                      <Server aria-hidden="true" />
-                      POT server pending
-                    </Pill>
-                  ) : null}
-                </div>
-                <pre className="quiver-command-preview">
-                  <code>{commandText}</code>
-                </pre>
-              </>
-            ) : (
-              <div className="quiver-empty-preview">
-                <Terminal aria-hidden="true" />
+          <div className="quiver-preview-stack">
+            <Card className="quiver-preview">
+              <div className="quiver-section-heading">
+                <Typography variant="h2">Command Preview</Typography>
                 <Typography variant="bodySmall" muted>
-                  Paste a URL, choose a preset, then prepare the command.
+                  Review the generated yt-dlp command before running it.
                 </Typography>
               </div>
-            )}
-          </Card>
+
+              {preview ? (
+                <>
+                  <div className="quiver-preview__meta">
+                    <Pill tone="primary">{preview.preset.label}</Pill>
+                    {preview.requiresPotServer ? (
+                      <Pill tone="secondary">
+                        <Server aria-hidden="true" />
+                        POT server pending
+                      </Pill>
+                    ) : null}
+                  </div>
+                  <pre className="quiver-command-preview">
+                    <code>{commandText}</code>
+                  </pre>
+                </>
+              ) : (
+                <div className="quiver-empty-preview">
+                  <Terminal aria-hidden="true" />
+                  <Typography variant="bodySmall" muted>
+                    Paste a URL, choose a preset, then prepare the command.
+                  </Typography>
+                </div>
+              )}
+            </Card>
+
+            <Card className="quiver-output">
+              <div className="quiver-section-heading">
+                <Typography variant="h2">Command Output</Typography>
+                <Typography variant="bodySmall" muted>
+                  Latest yt-dlp output from the current command.
+                </Typography>
+              </div>
+
+              {isDownloading && !outputText ? (
+                <pre
+                  ref={commandOutputRef}
+                  className="quiver-command-preview quiver-command-preview--output"
+                >
+                  <code>Running yt-dlp...</code>
+                </pre>
+              ) : outputText ? (
+                <pre
+                  ref={commandOutputRef}
+                  className="quiver-command-preview quiver-command-preview--output"
+                >
+                  <code>{outputText}</code>
+                </pre>
+              ) : (
+                <div className="quiver-empty-preview quiver-empty-preview--output">
+                  <Terminal aria-hidden="true" />
+                  <Typography variant="bodySmall" muted>
+                    Run the command to see its output here.
+                  </Typography>
+                </div>
+              )}
+
+              {downloadResult ? (
+                <div className="quiver-output__meta">
+                  <Pill tone={downloadResult.success ? "primary" : "secondary"}>
+                    {downloadResult.success ? "Success" : "Failed"}
+                  </Pill>
+                  <Pill tone="secondary">
+                    Exit {downloadResult.exitCode ?? "unknown"}
+                  </Pill>
+                </div>
+              ) : null}
+            </Card>
+          </div>
         </div>
       </main>
     </div>
@@ -372,12 +459,19 @@ function App() {
   function selectSource(source: PresetSource) {
     setActiveSource(source);
     setDownloadResult(null);
+    setCommandOutput("");
 
     const nextPreset = presets.find((preset) => preset.source === source);
     if (nextPreset) {
       setSelectedPresetId(nextPreset.id);
     }
   }
+}
+
+function createRunId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function errorToMessage(error: unknown): string {
