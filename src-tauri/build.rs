@@ -44,7 +44,8 @@ fn stage_yt_dlp_sidecar() {
         return;
     }
 
-    build_yt_dlp(&yt_dlp_dir);
+    let uv_binary = install_uv(&manifest_dir);
+    build_yt_dlp(&yt_dlp_dir, &uv_binary);
 
     let Some(built_binary) = find_built_binary(&yt_dlp_dir) else {
         panic!(
@@ -68,8 +69,31 @@ fn stage_yt_dlp_sidecar() {
     });
 }
 
-fn build_yt_dlp(yt_dlp_dir: &Path) {
+fn install_uv(manifest_dir: &Path) -> PathBuf {
+    let install_root = manifest_dir.join("binaries");
+    let uv_binary = install_root.join("bin").join(uv_executable_name());
+
+    if uv_binary.is_file() {
+        return uv_binary;
+    }
+
+    let status = Command::new("cargo")
+        .args(["install", "--locked", "uv", "--root"])
+        .arg(&install_root)
+        .status()
+        .expect("failed to start cargo while installing uv for yt-dlp sidecar build");
+
+    assert!(
+        status.success(),
+        "cargo install --locked uv failed with status {status}"
+    );
+
+    uv_binary
+}
+
+fn build_yt_dlp(yt_dlp_dir: &Path, uv_binary: &Path) {
     run_uv(
+        uv_binary,
         yt_dlp_dir,
         [
             "run",
@@ -86,6 +110,7 @@ fn build_yt_dlp(yt_dlp_dir: &Path) {
         ],
     );
     run_uv(
+        uv_binary,
         yt_dlp_dir,
         [
             "run",
@@ -104,8 +129,8 @@ fn build_yt_dlp(yt_dlp_dir: &Path) {
     );
 }
 
-fn run_uv<const N: usize>(working_directory: &Path, args: [&str; N]) {
-    let status = Command::new("uv")
+fn run_uv<const N: usize>(uv_binary: &Path, working_directory: &Path, args: [&str; N]) {
+    let status = Command::new(uv_binary)
         .args(args)
         .current_dir(working_directory)
         .status()
@@ -115,6 +140,16 @@ fn run_uv<const N: usize>(working_directory: &Path, args: [&str; N]) {
         status.success(),
         "uv failed while building yt-dlp sidecar with status {status}"
     );
+}
+
+#[cfg(target_os = "windows")]
+fn uv_executable_name() -> &'static str {
+    "uv.exe"
+}
+
+#[cfg(not(target_os = "windows"))]
+fn uv_executable_name() -> &'static str {
+    "uv"
 }
 
 fn find_built_binary(yt_dlp_dir: &Path) -> Option<PathBuf> {
