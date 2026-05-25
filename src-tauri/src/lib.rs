@@ -1,6 +1,8 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod presets;
 mod yt_dlp;
 
+use presets::{DownloadPreset, DownloadPresetInput, PresetCommandPreview, PresetId};
 use std::sync::Mutex;
 use yt_dlp::{YtDlpCommandOutput, YtDlpRunner};
 
@@ -143,6 +145,28 @@ fn run_yt_dlp(args: Vec<String>) -> Result<YtDlpCommandOutput, String> {
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn download_presets() -> Vec<DownloadPreset> {
+    presets::all_presets().to_vec()
+}
+
+#[tauri::command]
+fn download_preset_input_fields() -> Vec<presets::PresetInputField> {
+    presets::interactive_input_fields().to_vec()
+}
+
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri command arguments are extracted by value."
+)]
+fn preview_download_preset(
+    preset_id: PresetId,
+    input: DownloadPresetInput,
+) -> Result<PresetCommandPreview, String> {
+    presets::command_preview(preset_id, &input)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Runs the Tauri application.
 ///
@@ -160,7 +184,10 @@ pub fn run() {
             get_theme_preset,
             set_theme_preset,
             yt_dlp_version,
-            run_yt_dlp
+            run_yt_dlp,
+            download_presets,
+            download_preset_input_fields,
+            preview_download_preset
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
