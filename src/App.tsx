@@ -291,7 +291,7 @@ function App() {
           <div className="quiver-toolbar__spacer" />
 
           <Pill tone="primary">
-            {selectedPreset?.requiresPotServer ? "POT server later" : "No server"}
+            {selectedPreset?.requiresPotServer ? "POT server" : "No server"}
           </Pill>
           <Pill tone="secondary">
             {selectedPreset?.usesCookies ? "Cookies" : "No cookies"}
@@ -390,7 +390,7 @@ function App() {
                     {preview.requiresPotServer ? (
                       <Pill tone="secondary">
                         <Server aria-hidden="true" />
-                        POT server pending
+                        POT server
                       </Pill>
                     ) : null}
                   </div>

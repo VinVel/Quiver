@@ -1,11 +1,12 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod pot_server;
 mod presets;
 mod yt_dlp;
 
 use presets::{DownloadPreset, DownloadPresetInput, PresetCommandPreview, PresetId};
 use serde::Serialize;
-use std::sync::Mutex;
-use tauri::Emitter;
+use std::{path::PathBuf, sync::Mutex};
+use tauri::{Emitter, Manager};
 use yt_dlp::{YtDlpCommandOutput, YtDlpOutputStream, YtDlpRunner};
 
 #[derive(Default)]
@@ -140,15 +141,12 @@ fn set_theme_preset(
 }
 
 #[tauri::command]
-async fn yt_dlp_version() -> Result<YtDlpCommandOutput, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        YtDlpRunner::from_environment_or_bundle()
-            .map_err(|error| error.to_string())?
-            .run(["--version"])
-            .map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("failed to join yt-dlp version task: {error}"))?
+async fn yt_dlp_version(app: tauri::AppHandle) -> Result<YtDlpCommandOutput, String> {
+    YtDlpRunner::from_environment_or_bundle(app)
+        .map_err(|error| error.to_string())?
+        .run(["--version"])
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -157,25 +155,25 @@ async fn run_yt_dlp(
     run_id: String,
     args: Vec<String>,
 ) -> Result<YtDlpCommandOutput, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let emit_app = app.clone();
-        let emit_run_id = run_id.clone();
-        YtDlpRunner::from_environment_or_bundle()
-            .map_err(|error| error.to_string())?
-            .run_streaming(args, move |stream, chunk| {
-                let _ = emit_app.emit(
-                    "yt-dlp-output",
-                    YtDlpOutputChunk {
-                        run_id: emit_run_id.clone(),
-                        stream,
-                        chunk: chunk.to_string(),
-                    },
-                );
-            })
-            .map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("failed to join yt-dlp task: {error}"))?
+    let emit_app = app.clone();
+    let emit_run_id = run_id.clone();
+    let plugin_dirs = yt_dlp_plugin_dirs(&app);
+    let args = resolve_pot_server_home_args(args, &app);
+    YtDlpRunner::from_environment_or_bundle(app)
+        .map_err(|error| error.to_string())?
+        .with_plugin_dirs(plugin_dirs)
+        .run_streaming(args, move |stream, chunk| {
+            let _ = emit_app.emit(
+                "yt-dlp-output",
+                YtDlpOutputChunk {
+                    run_id: emit_run_id.clone(),
+                    stream,
+                    chunk: chunk.to_string(),
+                },
+            );
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -200,6 +198,22 @@ fn preview_download_preset(
     presets::command_preview(preset_id, &input)
 }
 
+fn yt_dlp_plugin_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let resource_dir = app.path().resource_dir().ok();
+    yt_dlp::candidate_plugin_dirs(resource_dir.as_deref())
+}
+
+fn resolve_pot_server_home_args(args: Vec<String>, app: &tauri::AppHandle) -> Vec<String> {
+    let Some(server_home) = pot_server::provider_server_path(app) else {
+        return args;
+    };
+    let server_home = server_home.display().to_string();
+
+    args.into_iter()
+        .map(|arg| arg.replace("__QUIVER_POT_SERVER_HOME__", &server_home))
+        .collect()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Runs the Tauri application.
 ///
@@ -209,7 +223,13 @@ fn preview_download_preset(
 pub fn run() {
     tauri::Builder::default()
         .manage(ThemeSettings::default())
+        .manage(pot_server::PotServer::default())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            pot_server::PotServer::start_async(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             get_theme_mode,

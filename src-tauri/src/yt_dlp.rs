@@ -11,8 +11,12 @@ use std::{
     thread,
 };
 
+use tauri::AppHandle;
+use tauri_plugin_shell::{ShellExt, process::CommandEvent};
+
 const YT_DLP_BINARY_ENV: &str = "QUIVER_YT_DLP_BINARY";
 const YT_DLP_BINARY_NAME: &str = "yt-dlp";
+const YT_DLP_PLUGINS_RESOURCE_PATH: &[&str] = &["yt-dlp-plugins"];
 
 #[derive(Debug, Serialize)]
 pub struct YtDlpCommandOutput {
@@ -25,7 +29,7 @@ pub struct YtDlpCommandOutput {
 #[derive(Debug)]
 pub enum YtDlpError {
     MissingBinary(Vec<PathBuf>),
-    SpawnFailed(std::io::Error),
+    SpawnFailed(String),
 }
 
 impl fmt::Display for YtDlpError {
@@ -49,15 +53,18 @@ impl fmt::Display for YtDlpError {
 
 impl Error for YtDlpError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::MissingBinary(_) => None,
-            Self::SpawnFailed(error) => Some(error),
-        }
+        None
     }
 }
 
 pub struct YtDlpRunner {
-    binary_path: PathBuf,
+    command: YtDlpCommand,
+    plugin_dirs: Vec<PathBuf>,
+}
+
+enum YtDlpCommand {
+    Override(PathBuf),
+    Sidecar(AppHandle),
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -68,42 +75,61 @@ pub enum YtDlpOutputStream {
 }
 
 impl YtDlpRunner {
-    pub fn from_environment_or_bundle() -> Result<Self, YtDlpError> {
-        let candidate_paths = candidate_binary_paths();
-
-        for path in &candidate_paths {
+    pub fn from_environment_or_bundle(app: AppHandle) -> Result<Self, YtDlpError> {
+        if let Some(configured_path) = env::var_os(YT_DLP_BINARY_ENV) {
+            let path = PathBuf::from(configured_path);
             if path.is_file() {
                 return Ok(Self {
-                    binary_path: path.clone(),
+                    command: YtDlpCommand::Override(path),
+                    plugin_dirs: Vec::new(),
                 });
             }
+
+            return Err(YtDlpError::MissingBinary(vec![path]));
         }
 
-        Err(YtDlpError::MissingBinary(candidate_paths))
+        Ok(Self {
+            command: YtDlpCommand::Sidecar(app),
+            plugin_dirs: Vec::new(),
+        })
     }
 
-    pub fn run<I, S>(&self, args: I) -> Result<YtDlpCommandOutput, YtDlpError>
+    pub async fn run<I, S>(&self, args: I) -> Result<YtDlpCommandOutput, YtDlpError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let output = Command::new(&self.binary_path)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(YtDlpError::SpawnFailed)?;
+        let args = self.command_args(args);
 
-        Ok(YtDlpCommandOutput {
-            exit_code: output.status.code(),
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
+        match &self.command {
+            YtDlpCommand::Override(binary_path) => {
+                let binary_path = binary_path.clone();
+                tauri::async_runtime::spawn_blocking(move || run_override(binary_path, args))
+                    .await
+                    .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?
+            }
+            YtDlpCommand::Sidecar(app) => {
+                let output = app
+                    .shell()
+                    .sidecar(YT_DLP_BINARY_NAME)
+                    .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?
+                    .args(args)
+                    .set_raw_out(true)
+                    .output()
+                    .await
+                    .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?;
+
+                Ok(YtDlpCommandOutput {
+                    exit_code: output.status.code(),
+                    success: output.status.success(),
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                })
+            }
+        }
     }
 
-    pub fn run_streaming<I, S, F>(
+    pub async fn run_streaming<I, S, F>(
         &self,
         args: I,
         on_chunk: F,
@@ -113,53 +139,170 @@ impl YtDlpRunner {
         S: AsRef<OsStr>,
         F: Fn(YtDlpOutputStream, &str) + Send + Sync + 'static,
     {
-        let mut child = Command::new(&self.binary_path)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(YtDlpError::SpawnFailed)?;
+        let args = self.command_args(args);
 
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        let stdout_buffer = Arc::new(Mutex::new(String::new()));
-        let stderr_buffer = Arc::new(Mutex::new(String::new()));
-        let on_chunk = Arc::new(on_chunk);
-
-        let stdout_reader = stdout.map(|stream| {
-            spawn_stream_reader(
-                stream,
-                YtDlpOutputStream::Stdout,
-                Arc::clone(&stdout_buffer),
-                Arc::clone(&on_chunk),
-            )
-        });
-        let stderr_reader = stderr.map(|stream| {
-            spawn_stream_reader(
-                stream,
-                YtDlpOutputStream::Stderr,
-                Arc::clone(&stderr_buffer),
-                Arc::clone(&on_chunk),
-            )
-        });
-
-        let status = child.wait().map_err(YtDlpError::SpawnFailed)?;
-
-        if let Some(reader) = stdout_reader {
-            let _ = reader.join();
+        match &self.command {
+            YtDlpCommand::Override(binary_path) => {
+                let binary_path = binary_path.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    run_override_streaming(binary_path, args, on_chunk)
+                })
+                .await
+                .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?
+            }
+            YtDlpCommand::Sidecar(app) => run_sidecar_streaming(app, args, on_chunk).await,
         }
-        if let Some(reader) = stderr_reader {
-            let _ = reader.join();
-        }
-
-        Ok(YtDlpCommandOutput {
-            exit_code: status.code(),
-            success: status.success(),
-            stdout: read_buffer(&stdout_buffer),
-            stderr: read_buffer(&stderr_buffer),
-        })
     }
+
+    pub fn with_plugin_dirs(mut self, plugin_dirs: Vec<PathBuf>) -> Self {
+        self.plugin_dirs = plugin_dirs;
+        self
+    }
+
+    fn command_args<I, S>(&self, args: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut command_args = Vec::new();
+
+        for plugin_dir in &self.plugin_dirs {
+            command_args.push("--plugin-dirs".to_string());
+            command_args.push(plugin_dir.display().to_string());
+        }
+
+        command_args.extend(
+            args.into_iter()
+                .map(|arg| arg.as_ref().to_string_lossy().into_owned()),
+        );
+        command_args
+    }
+}
+
+fn run_override(binary_path: PathBuf, args: Vec<String>) -> Result<YtDlpCommandOutput, YtDlpError> {
+    let output = Command::new(binary_path)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?;
+
+    Ok(YtDlpCommandOutput {
+        exit_code: output.status.code(),
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+fn run_override_streaming<F>(
+    binary_path: PathBuf,
+    args: Vec<String>,
+    on_chunk: F,
+) -> Result<YtDlpCommandOutput, YtDlpError>
+where
+    F: Fn(YtDlpOutputStream, &str) + Send + Sync + 'static,
+{
+    let mut child = Command::new(binary_path)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_buffer = Arc::new(Mutex::new(String::new()));
+    let stderr_buffer = Arc::new(Mutex::new(String::new()));
+    let on_chunk = Arc::new(on_chunk);
+
+    let stdout_reader = stdout.map(|stream| {
+        spawn_stream_reader(
+            stream,
+            YtDlpOutputStream::Stdout,
+            Arc::clone(&stdout_buffer),
+            Arc::clone(&on_chunk),
+        )
+    });
+    let stderr_reader = stderr.map(|stream| {
+        spawn_stream_reader(
+            stream,
+            YtDlpOutputStream::Stderr,
+            Arc::clone(&stderr_buffer),
+            Arc::clone(&on_chunk),
+        )
+    });
+
+    let status = child
+        .wait()
+        .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?;
+
+    if let Some(reader) = stdout_reader {
+        let _ = reader.join();
+    }
+    if let Some(reader) = stderr_reader {
+        let _ = reader.join();
+    }
+
+    Ok(YtDlpCommandOutput {
+        exit_code: status.code(),
+        success: status.success(),
+        stdout: read_buffer(&stdout_buffer),
+        stderr: read_buffer(&stderr_buffer),
+    })
+}
+
+async fn run_sidecar_streaming<F>(
+    app: &AppHandle,
+    args: Vec<String>,
+    on_chunk: F,
+) -> Result<YtDlpCommandOutput, YtDlpError>
+where
+    F: Fn(YtDlpOutputStream, &str) + Send + Sync + 'static,
+{
+    let (mut rx, _child) = app
+        .shell()
+        .sidecar(YT_DLP_BINARY_NAME)
+        .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?
+        .args(args)
+        .set_raw_out(true)
+        .spawn()
+        .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?;
+    let mut exit_code = None;
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                let chunk = String::from_utf8_lossy(&bytes);
+                stdout.push_str(&chunk);
+                on_chunk(YtDlpOutputStream::Stdout, &chunk);
+            }
+            CommandEvent::Stderr(bytes) => {
+                let chunk = String::from_utf8_lossy(&bytes);
+                stderr.push_str(&chunk);
+                on_chunk(YtDlpOutputStream::Stderr, &chunk);
+            }
+            CommandEvent::Terminated(payload) => {
+                exit_code = payload.code;
+            }
+            CommandEvent::Error(error) => {
+                stderr.push_str(&error);
+                on_chunk(YtDlpOutputStream::Stderr, &error);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(YtDlpCommandOutput {
+        exit_code,
+        success: exit_code == Some(0),
+        stdout,
+        stderr,
+    })
 }
 
 fn spawn_stream_reader<R, F>(
@@ -196,87 +339,56 @@ fn read_buffer(output_buffer: &Arc<Mutex<String>>) -> String {
         .unwrap_or_default()
 }
 
-fn candidate_binary_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    if let Some(configured_path) = env::var_os(YT_DLP_BINARY_ENV) {
-        paths.push(PathBuf::from(configured_path));
-    }
-
-    if let Ok(current_exe) = env::current_exe()
-        && let Some(executable_directory) = current_exe.parent()
-    {
-        paths.push(executable_directory.join(sidecar_binary_name()));
-        paths.push(executable_directory.join(platform_binary_name()));
-    }
-
-    if let Some(workspace_root) = workspace_root() {
-        paths.push(
-            workspace_root
-                .join("src-tauri")
-                .join("binaries")
-                .join(sidecar_binary_name()),
-        );
-        paths.push(
-            workspace_root
-                .join("src-tauri")
-                .join("binaries")
-                .join(platform_binary_name()),
-        );
-    }
-
-    paths
-}
-
 fn workspace_root() -> Option<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir.parent().map(Path::to_path_buf)
 }
 
-fn platform_binary_name() -> String {
-    if cfg!(windows) {
-        format!("{YT_DLP_BINARY_NAME}.exe")
-    } else {
-        YT_DLP_BINARY_NAME.to_string()
+pub fn candidate_plugin_dirs(resource_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(workspace_root) = workspace_root() {
+        paths.push(
+            workspace_root
+                .join("src-tauri")
+                .join("resources")
+                .join(plugin_relative_path()),
+        );
     }
+
+    if let Some(resource_dir) = resource_dir {
+        paths.push(resource_dir.join(plugin_relative_path()));
+        paths.push(resource_dir.join("resources").join(plugin_relative_path()));
+    }
+
+    paths
+        .into_iter()
+        .filter(|path| path.join("bgutil").join("yt_dlp_plugins").is_dir())
+        .collect()
 }
 
-fn sidecar_binary_name() -> String {
-    let target = option_env!("TARGET").unwrap_or_default();
-    if target.is_empty() {
-        return platform_binary_name();
-    }
-
-    if cfg!(windows) {
-        format!("{YT_DLP_BINARY_NAME}-{target}.exe")
-    } else {
-        format!("{YT_DLP_BINARY_NAME}-{target}")
-    }
+fn plugin_relative_path() -> PathBuf {
+    YT_DLP_PLUGINS_RESOURCE_PATH.iter().collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{YtDlpRunner, platform_binary_name, sidecar_binary_name, workspace_root};
+    use super::{YtDlpCommand, YtDlpRunner, workspace_root};
     use std::path::PathBuf;
 
     impl YtDlpRunner {
         fn from_path_for_test(binary_path: PathBuf) -> Self {
-            Self { binary_path }
+            Self {
+                command: YtDlpCommand::Override(binary_path),
+                plugin_dirs: Vec::new(),
+            }
         }
 
-        fn binary_path(&self) -> &std::path::Path {
-            &self.binary_path
-        }
-    }
-
-    #[test]
-    fn platform_binary_name_uses_exe_extension_on_windows() {
-        let binary_name = platform_binary_name();
-
-        if cfg!(windows) {
-            assert_eq!(binary_name, "yt-dlp.exe");
-        } else {
-            assert_eq!(binary_name, "yt-dlp");
+        fn binary_path(&self) -> Option<&std::path::Path> {
+            match &self.command {
+                YtDlpCommand::Override(path) => Some(path),
+                YtDlpCommand::Sidecar(_) => None,
+            }
         }
     }
 
@@ -288,14 +400,13 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_binary_name_contains_base_name() {
-        assert!(sidecar_binary_name().starts_with("yt-dlp"));
-    }
-
-    #[test]
     fn runner_exposes_binary_path() {
         let runner = YtDlpRunner::from_path_for_test(PathBuf::from("yt-dlp"));
 
-        assert!(runner.binary_path().ends_with("yt-dlp"));
+        assert!(
+            runner
+                .binary_path()
+                .is_some_and(|path| path.ends_with("yt-dlp"))
+        );
     }
 }

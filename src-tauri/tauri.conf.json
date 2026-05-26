@@ -28,6 +28,10 @@
       "binaries/deno",
       "binaries/yt-dlp"
     ],
+    "resources": [
+      "resources/bgutil-ytdlp-pot-provider",
+      "resources/yt-dlp-plugins"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -17,7 +17,17 @@ fn main() {
     configure_build_tracking();
     stage_yt_dlp_sidecar();
     stage_deno_sidecar();
-    tauri_build::build();
+    prepare_pot_provider_resource();
+
+    let mut attributes = tauri_build::Attributes::new();
+    #[cfg(all(target_os = "windows", target_env = "msvc"))]
+    {
+        attributes = attributes
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        add_manifest();
+    }
+
+    tauri_build::try_build(attributes).expect("failed to build Tauri application metadata");
 }
 
 fn configure_build_tracking() {
@@ -25,6 +35,12 @@ fn configure_build_tracking() {
     println!("cargo:rerun-if-changed=../yt-dlp/pyproject.toml");
     println!("cargo:rerun-if-changed=../yt-dlp/yt_dlp/version.py");
     println!("cargo:rerun-if-changed=../yt-dlp/bundle/pyinstaller.py");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/package.json");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/deno.lock");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/src/main.ts");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/src/session_manager.ts");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/src/utils.ts");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/plugin/yt_dlp_plugins");
 }
 
 fn stage_yt_dlp_sidecar() {
@@ -100,6 +116,183 @@ fn install_cargo_binary(name: &str, manifest_dir: &Path) -> PathBuf {
     );
 
     binary
+}
+
+fn prepare_pot_provider_resource() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let Some(workspace_root) = manifest_dir.parent() else {
+        warn("Could not resolve workspace root; skipping POT provider resource preparation.");
+        return;
+    };
+    let source_server = workspace_root
+        .join("bgutil-ytdlp-pot-provider")
+        .join("server");
+
+    if !source_server.join("package.json").is_file() {
+        warn(format!(
+            "bgutil-ytdlp-pot-provider submodule is missing at {}; skipping POT provider resource preparation.",
+            source_server.display()
+        ));
+        return;
+    }
+
+    let resource_server = manifest_dir
+        .join("resources")
+        .join("bgutil-ytdlp-pot-provider")
+        .join("server");
+
+    copy_pot_provider_sources(&source_server, &resource_server);
+    copy_pot_provider_plugin(workspace_root, &manifest_dir);
+
+    let commander_package = resource_server.join("node_modules").join("commander");
+    let express_package = resource_server.join("node_modules").join("express");
+    let node_modules = resource_server.join("node_modules");
+
+    if !commander_package.is_dir() || !express_package.is_dir() || !is_symlink(&commander_package) {
+        if node_modules.exists() {
+            fs::remove_dir_all(&node_modules).unwrap_or_else(|error| {
+                panic!(
+                    "failed to remove stale POT provider dependencies at {}: {error}",
+                    node_modules.display()
+                )
+            });
+        }
+        install_pot_provider_dependencies(&manifest_dir, &resource_server);
+    }
+}
+
+fn copy_pot_provider_plugin(workspace_root: &Path, manifest_dir: &Path) {
+    let source_plugin = workspace_root
+        .join("bgutil-ytdlp-pot-provider")
+        .join("plugin");
+
+    if !source_plugin.join("yt_dlp_plugins").is_dir() {
+        warn(format!(
+            "bgutil-ytdlp-pot-provider plugin is missing at {}; skipping yt-dlp plugin resource preparation.",
+            source_plugin.display()
+        ));
+        return;
+    }
+
+    let plugin_resource = manifest_dir
+        .join("resources")
+        .join("yt-dlp-plugins")
+        .join("bgutil");
+
+    copy_file_if_exists(
+        &source_plugin.join("pyproject.toml"),
+        &plugin_resource.join("pyproject.toml"),
+    );
+    copy_directory(
+        &source_plugin.join("yt_dlp_plugins"),
+        &plugin_resource.join("yt_dlp_plugins"),
+    );
+}
+
+fn copy_pot_provider_sources(source_server: &Path, resource_server: &Path) {
+    fs::create_dir_all(resource_server)
+        .expect("failed to create POT provider resource output directory");
+
+    for file_name in [
+        ".gitattributes",
+        ".prettierrc.json",
+        "deno.lock",
+        "package-lock.json",
+        "package.json",
+        "README.md",
+        "tsconfig.json",
+    ] {
+        copy_file_if_exists(
+            &source_server.join(file_name),
+            &resource_server.join(file_name),
+        );
+    }
+
+    copy_directory(&source_server.join("src"), &resource_server.join("src"));
+    copy_directory(&source_server.join("types"), &resource_server.join("types"));
+}
+
+fn install_pot_provider_dependencies(manifest_dir: &Path, resource_server: &Path) {
+    let deno_binary = manifest_dir
+        .join("binaries")
+        .join(sidecar_file_name_for_host(DENO_SIDECAR_NAME));
+    let status = Command::new(&deno_binary)
+        .args([
+            "install",
+            "--node-modules-dir=auto",
+            "--allow-scripts=npm:canvas",
+            "--frozen",
+        ])
+        .current_dir(resource_server)
+        .status()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to start Deno while installing POT provider dependencies from {}: {error}",
+                deno_binary.display()
+            )
+        });
+
+    assert!(
+        status.success(),
+        "Deno failed while installing POT provider dependencies with status {status}"
+    );
+}
+
+fn is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+}
+
+fn copy_directory(source: &Path, destination: &Path) {
+    if !source.is_dir() {
+        return;
+    }
+
+    fs::create_dir_all(destination).unwrap_or_else(|error| {
+        panic!(
+            "failed to create directory {} while preparing POT provider resource: {error}",
+            destination.display()
+        )
+    });
+
+    for entry in fs::read_dir(source).unwrap_or_else(|error| {
+        panic!(
+            "failed to read directory {} while preparing POT provider resource: {error}",
+            source.display()
+        )
+    }) {
+        let entry = entry.expect("failed to read POT provider source directory entry");
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+
+        if source_path.is_dir() {
+            copy_directory(&source_path, &destination_path);
+        } else {
+            copy_file_if_exists(&source_path, &destination_path);
+        }
+    }
+}
+
+fn copy_file_if_exists(source: &Path, destination: &Path) {
+    if !source.is_file() {
+        return;
+    }
+
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).unwrap_or_else(|error| {
+            panic!(
+                "failed to create directory {} while preparing POT provider resource: {error}",
+                parent.display()
+            )
+        });
+    }
+
+    fs::copy(source, destination).unwrap_or_else(|error| {
+        panic!(
+            "failed to copy {} to {} while preparing POT provider resource: {error}",
+            source.display(),
+            destination.display()
+        )
+    });
 }
 
 fn build_yt_dlp(yt_dlp_dir: &Path, uv_binary: &Path) {
@@ -373,4 +566,23 @@ fn host_target_triple() -> &'static str {
 
 fn warn(message: impl AsRef<str>) {
     println!("cargo:warning={}", message.as_ref());
+}
+
+#[cfg(all(target_os = "windows", target_env = "msvc"))]
+fn add_manifest() {
+    static WINDOWS_MANIFEST_FILE: &str = "windows-app-manifest.xml";
+
+    let manifest = env::current_dir()
+        .expect("failed to resolve current directory")
+        .join(WINDOWS_MANIFEST_FILE);
+
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg=/MANIFESTINPUT:{}",
+        manifest
+            .to_str()
+            .expect("manifest path should be valid Unicode")
+    );
+    println!("cargo:rustc-link-arg=/WX");
 }
