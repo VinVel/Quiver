@@ -25,6 +25,7 @@
     "active": true,
     "targets": "all",
     "externalBin": [
+      "binaries/deno",
       "binaries/yt-dlp"
     ],
     "icon": [
