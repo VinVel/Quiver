@@ -8,6 +8,9 @@ use std::{
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
+
 const DENO_VERSION: &str = "2.8.0";
 const PYTHON_VERSION: &str = "3.12";
 const DENO_SIDECAR_NAME: &str = "deno";
@@ -147,10 +150,19 @@ fn prepare_pot_provider_resource() {
     let commander_package = resource_server.join("node_modules").join("commander");
     let express_package = resource_server.join("node_modules").join("express");
     let node_modules = resource_server.join("node_modules");
+    let dev_dependency_package = node_modules
+        .join(".deno")
+        .join("@typescript-eslint+eslint-plugin@8.54.0");
+    let hoisted_dev_dependency_package = node_modules.join("@typescript-eslint");
 
-    if !commander_package.is_dir() || !express_package.is_dir() || !is_symlink(&commander_package) {
+    if !commander_package.is_dir()
+        || !express_package.is_dir()
+        || is_symlink(&commander_package)
+        || dev_dependency_package.exists()
+        || hoisted_dev_dependency_package.exists()
+    {
         if node_modules.exists() {
-            fs::remove_dir_all(&node_modules).unwrap_or_else(|error| {
+            remove_directory_tree(&node_modules).unwrap_or_else(|error| {
                 panic!(
                     "failed to remove stale POT provider dependencies at {}: {error}",
                     node_modules.display()
@@ -197,8 +209,6 @@ fn copy_pot_provider_sources(source_server: &Path, resource_server: &Path) {
         ".gitattributes",
         ".prettierrc.json",
         "deno.lock",
-        "package-lock.json",
-        "package.json",
         "README.md",
         "tsconfig.json",
     ] {
@@ -208,8 +218,44 @@ fn copy_pot_provider_sources(source_server: &Path, resource_server: &Path) {
         );
     }
 
+    copy_runtime_package_json(&source_server.join("package.json"), resource_server);
+    remove_file_if_exists(&resource_server.join("package-lock.json"));
     copy_directory(&source_server.join("src"), &resource_server.join("src"));
     copy_directory(&source_server.join("types"), &resource_server.join("types"));
+}
+
+fn copy_runtime_package_json(source: &Path, resource_server: &Path) {
+    let package_json = fs::read_to_string(source).unwrap_or_else(|error| {
+        panic!(
+            "failed to read POT provider package.json at {}: {error}",
+            source.display()
+        )
+    });
+    let mut package_json: serde_json::Value =
+        serde_json::from_str(&package_json).unwrap_or_else(|error| {
+            panic!(
+                "failed to parse POT provider package.json at {}: {error}",
+                source.display()
+            )
+        });
+
+    if let Some(package) = package_json.as_object_mut() {
+        package.remove("devDependencies");
+        package.remove("scripts");
+    }
+
+    let destination = resource_server.join("package.json");
+    fs::write(
+        &destination,
+        serde_json::to_string_pretty(&package_json)
+            .expect("failed to serialize runtime POT provider package.json"),
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "failed to write runtime POT provider package.json at {}: {error}",
+            destination.display()
+        )
+    });
 }
 
 fn install_pot_provider_dependencies(manifest_dir: &Path, resource_server: &Path) {
@@ -219,9 +265,12 @@ fn install_pot_provider_dependencies(manifest_dir: &Path, resource_server: &Path
     let status = Command::new(&deno_binary)
         .args([
             "install",
-            "--node-modules-dir=auto",
+            "--node-modules-dir=manual",
+            "--node-modules-linker=hoisted",
             "--allow-scripts=npm:canvas",
-            "--frozen",
+            "--frozen=false",
+            "--prod",
+            "--skip-types",
         ])
         .current_dir(resource_server)
         .status()
@@ -272,6 +321,76 @@ fn copy_directory(source: &Path, destination: &Path) {
     }
 }
 
+fn remove_directory_tree(path: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| remove_error(path, error))?;
+
+    if metadata.file_type().is_symlink() {
+        if is_directory_symlink(&metadata) {
+            remove_dir_entry(path)
+        } else {
+            remove_file_entry(path)
+        }
+    } else if metadata.is_dir() {
+        for entry in fs::read_dir(path).map_err(|error| remove_error(path, error))? {
+            let entry = entry.map_err(|error| remove_error(path, error))?;
+            remove_directory_tree(&entry.path())?;
+        }
+        remove_dir_entry(path)
+    } else {
+        remove_file_entry(path)
+    }
+}
+
+fn is_directory_symlink(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+        metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
+    }
+
+    #[cfg(not(windows))]
+    {
+        metadata.is_dir()
+    }
+}
+
+fn remove_file_entry(path: &Path) -> std::io::Result<()> {
+    fs::remove_file(path).or_else(|error| {
+        make_writable(path)?;
+        fs::remove_file(path).map_err(|retry_error| {
+            remove_error(
+                path,
+                std::io::Error::new(retry_error.kind(), format!("{error}; retry: {retry_error}")),
+            )
+        })
+    })
+}
+
+fn remove_dir_entry(path: &Path) -> std::io::Result<()> {
+    fs::remove_dir(path).or_else(|error| {
+        make_writable(path)?;
+        fs::remove_dir(path).map_err(|retry_error| {
+            remove_error(
+                path,
+                std::io::Error::new(retry_error.kind(), format!("{error}; retry: {retry_error}")),
+            )
+        })
+    })
+}
+
+fn make_writable(path: &Path) -> std::io::Result<()> {
+    let mut permissions = fs::symlink_metadata(path)?.permissions();
+    if permissions.readonly() {
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
+fn remove_error(path: &Path, error: std::io::Error) -> std::io::Error {
+    std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+}
+
 fn copy_file_if_exists(source: &Path, destination: &Path) {
     if !source.is_file() {
         return;
@@ -293,6 +412,13 @@ fn copy_file_if_exists(source: &Path, destination: &Path) {
             destination.display()
         )
     });
+}
+
+fn remove_file_if_exists(path: &Path) {
+    if path.is_file() {
+        fs::remove_file(path)
+            .unwrap_or_else(|error| panic!("failed to remove {}: {error}", path.display()));
+    }
 }
 
 fn build_yt_dlp(yt_dlp_dir: &Path, uv_binary: &Path) {
