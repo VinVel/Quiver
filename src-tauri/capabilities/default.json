@@ -18,6 +18,19 @@
           "name": "yt-dlp",
           "cmd": "yt-dlp",
           "sidecar": true
+        },
+        {
+          "name": "ytsubconverter",
+          "cmd": "ytsubconverter",
+          "sidecar": true,
+          "args": [
+            {
+              "validator": "[^-].*\\.[sS][rR][vV]3"
+            },
+            {
+              "validator": "[^-].*\\.[aA][sS][sS]"
+            }
+          ]
         }
       ]
     },
@@ -33,6 +46,19 @@
           "name": "yt-dlp",
           "cmd": "yt-dlp",
           "sidecar": true
+        },
+        {
+          "name": "ytsubconverter",
+          "cmd": "ytsubconverter",
+          "sidecar": true,
+          "args": [
+            {
+              "validator": "[^-].*\\.[sS][rR][vV]3"
+            },
+            {
+              "validator": "[^-].*\\.[aA][sS][sS]"
+            }
+          ]
         }
       ]
     },

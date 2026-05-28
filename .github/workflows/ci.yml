@@ -32,7 +32,8 @@ jobs:
             artifact: ci-build-windows-x64
             rust_targets: x86_64-pc-windows-msvc
             install_linux_deps: false
-            
+            install_dotnet: false
+
           - name: Windows arm64
             runner: windows-11-arm
             kind: desktop
@@ -40,6 +41,7 @@ jobs:
             artifact: ci-build-windows-arm64
             rust_targets: aarch64-pc-windows-msvc
             install_linux_deps: false
+            install_dotnet: false
 
           - name: macOS Intel
             runner: macos-26-intel
@@ -48,6 +50,7 @@ jobs:
             artifact: ci-build-macos-intel
             rust_targets: x86_64-apple-darwin
             install_linux_deps: false
+            install_dotnet: true
 
           - name: macOS arm64
             runner: macos-26
@@ -56,6 +59,7 @@ jobs:
             artifact: ci-build-macos-arm64
             rust_targets: aarch64-apple-darwin
             install_linux_deps: false
+            install_dotnet: true
 
           - name: Linux x64 GNU
             runner: ubuntu-24.04
@@ -64,6 +68,7 @@ jobs:
             artifact: ci-build-linux-x64-gnu
             rust_targets: x86_64-unknown-linux-gnu
             install_linux_deps: true
+            install_dotnet: true
 
           - name: Linux arm64 GNU
             runner: ubuntu-24.04-arm
@@ -72,6 +77,7 @@ jobs:
             artifact: ci-build-linux-arm64-gnu
             rust_targets: aarch64-unknown-linux-gnu
             install_linux_deps: true
+            install_dotnet: true
 
     steps:
       - name: Check out repository
@@ -101,6 +107,12 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.rust_targets }}
+
+      - name: Install .NET SDK
+        if: ${{ matrix.install_dotnet }}
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2

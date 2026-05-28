@@ -26,7 +26,8 @@
     "targets": "all",
     "externalBin": [
       "binaries/deno",
-      "binaries/yt-dlp"
+      "binaries/yt-dlp",
+      "binaries/ytsubconverter"
     ],
     "resources": [
       "resources/bgutil-ytdlp-pot-provider",

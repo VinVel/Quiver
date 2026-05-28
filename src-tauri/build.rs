@@ -15,10 +15,12 @@ const DENO_VERSION: &str = "2.8.0";
 const PYTHON_VERSION: &str = "3.12";
 const DENO_SIDECAR_NAME: &str = "deno";
 const YT_DLP_SIDECAR_NAME: &str = "yt-dlp";
+const YT_SUB_CONVERTER_SIDECAR_NAME: &str = "ytsubconverter";
 
 fn main() {
     configure_build_tracking();
     stage_yt_dlp_sidecar();
+    stage_yt_sub_converter_sidecar();
     stage_deno_sidecar();
     prepare_pot_provider_resource();
 
@@ -38,6 +40,9 @@ fn configure_build_tracking() {
     println!("cargo:rerun-if-changed=../yt-dlp/pyproject.toml");
     println!("cargo:rerun-if-changed=../yt-dlp/yt_dlp/version.py");
     println!("cargo:rerun-if-changed=../yt-dlp/bundle/pyinstaller.py");
+    println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.Shared");
+    println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.UI.Linux");
+    println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.UI.Win");
     println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/package.json");
     println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/deno.lock");
     println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/src/main.ts");
@@ -93,6 +98,276 @@ fn stage_yt_dlp_sidecar() {
             expected_sidecar.display()
         );
     });
+}
+
+fn stage_yt_sub_converter_sidecar() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let expected_sidecar = manifest_dir
+        .join("binaries")
+        .join(sidecar_file_name_for_host(YT_SUB_CONVERTER_SIDECAR_NAME));
+
+    if expected_sidecar.is_file() {
+        return;
+    }
+
+    let Some(workspace_root) = manifest_dir.parent() else {
+        warn("Could not resolve workspace root; skipping YTSubConverter sidecar build.");
+        return;
+    };
+    let yt_sub_converter_dir = workspace_root.join("YTSubConverter");
+
+    if !yt_sub_converter_dir.join("YTSubConverter.sln").is_file() {
+        warn(format!(
+            "YTSubConverter submodule is missing at {}; skipping sidecar build.",
+            yt_sub_converter_dir.display()
+        ));
+        return;
+    }
+
+    let Some(built_binary) = build_yt_sub_converter(&yt_sub_converter_dir, &manifest_dir) else {
+        return;
+    };
+
+    fs::create_dir_all(
+        expected_sidecar
+            .parent()
+            .expect("sidecar path should have a parent directory"),
+    )
+    .expect("failed to create YTSubConverter sidecar output directory");
+    fs::copy(&built_binary, &expected_sidecar).unwrap_or_else(|error| {
+        panic!(
+            "failed to copy {} to {}: {error}",
+            built_binary.display(),
+            expected_sidecar.display()
+        );
+    });
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&expected_sidecar, fs::Permissions::from_mode(0o755))
+            .expect("failed to mark YTSubConverter sidecar executable");
+    }
+}
+
+fn build_yt_sub_converter(yt_sub_converter_dir: &Path, _manifest_dir: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        build_yt_sub_converter_windows(yt_sub_converter_dir)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        Some(build_yt_sub_converter_self_contained(
+            yt_sub_converter_dir,
+            _manifest_dir,
+        ))
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        panic!(
+            "YTSubConverter sidecar build is not configured for target {}",
+            build_target_triple()
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn build_yt_sub_converter_windows(yt_sub_converter_dir: &Path) -> Option<PathBuf> {
+    let project = yt_sub_converter_dir
+        .join("YTSubConverter.UI.Win")
+        .join("YTSubConverter.UI.Win.csproj");
+    let Some(msbuild) = find_msbuild() else {
+        warn(
+            "Visual Studio MSBuild was not found; skipping YTSubConverter Windows sidecar build. \
+             Install Visual Studio Build Tools with MSBuild to generate the net48 sidecar.",
+        );
+        return None;
+    };
+
+    let status = Command::new(&msbuild)
+        .arg(&project)
+        .args([
+            "/restore",
+            "/m",
+            "/p:Configuration=Release",
+            "/p:Platform=AnyCPU",
+        ])
+        .current_dir(yt_sub_converter_dir)
+        .status()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to start MSBuild at {} while building YTSubConverter sidecar: {error}",
+                msbuild.display()
+            )
+        });
+
+    assert!(
+        status.success(),
+        "MSBuild failed while building YTSubConverter sidecar with status {status}"
+    );
+
+    let built_binary = yt_sub_converter_dir
+        .join("YTSubConverter.UI.Win")
+        .join("bin")
+        .join("Release")
+        .join("YTSubConverter.exe");
+
+    assert!(
+        built_binary.is_file(),
+        "YTSubConverter Windows build finished but no binary was found at {}",
+        built_binary.display()
+    );
+
+    Some(built_binary)
+}
+
+#[cfg(target_os = "windows")]
+fn find_msbuild() -> Option<PathBuf> {
+    if let Some(msbuild) = find_msbuild_with_vswhere() {
+        return Some(msbuild);
+    }
+
+    let program_files_x86 = PathBuf::from(env::var_os("ProgramFiles(x86)")?);
+    [
+        program_files_x86
+            .join("Microsoft Visual Studio")
+            .join("2022")
+            .join("BuildTools")
+            .join("MSBuild")
+            .join("Current")
+            .join("Bin")
+            .join("amd64")
+            .join("MSBuild.exe"),
+        program_files_x86
+            .join("Microsoft Visual Studio")
+            .join("2022")
+            .join("BuildTools")
+            .join("MSBuild")
+            .join("Current")
+            .join("Bin")
+            .join("MSBuild.exe"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+#[cfg(target_os = "windows")]
+fn find_msbuild_with_vswhere() -> Option<PathBuf> {
+    let program_files_x86 = env::var_os("ProgramFiles(x86)")?;
+    let vswhere = PathBuf::from(program_files_x86)
+        .join("Microsoft Visual Studio")
+        .join("Installer")
+        .join("vswhere.exe");
+
+    if !vswhere.is_file() {
+        return None;
+    }
+
+    let output = Command::new(vswhere)
+        .args([
+            "-latest",
+            "-requires",
+            "Microsoft.Component.MSBuild",
+            "-find",
+            "MSBuild\\**\\Bin\\MSBuild.exe",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8(output.stdout)
+        .ok()?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn build_yt_sub_converter_self_contained(
+    yt_sub_converter_dir: &Path,
+    manifest_dir: &Path,
+) -> PathBuf {
+    let project = yt_sub_converter_dir
+        .join("YTSubConverter.UI.Linux")
+        .join("YTSubConverter.UI.Linux.csproj");
+    let target = build_target_triple();
+    let runtime_identifier = yt_sub_converter_runtime_identifier(&target);
+    let publish_dir = manifest_dir
+        .join("target")
+        .join("ytsubconverter")
+        .join(&target);
+
+    run_dotnet(
+        yt_sub_converter_dir,
+        [
+            "publish",
+            path_to_str(&project),
+            "--configuration",
+            "Release",
+            "--runtime",
+            runtime_identifier,
+            "--self-contained",
+            "true",
+            "--output",
+            path_to_str(&publish_dir),
+            "-p:PublishSingleFile=true",
+            "-p:IncludeNativeLibrariesForSelfExtract=true",
+            "-p:DebugType=None",
+            "-p:DebugSymbols=false",
+        ],
+    );
+
+    let built_binary = publish_dir.join(executable_name(YT_SUB_CONVERTER_SIDECAR_NAME));
+    assert!(
+        built_binary.is_file(),
+        "YTSubConverter publish finished but no binary was found at {}",
+        built_binary.display()
+    );
+
+    built_binary
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn yt_sub_converter_runtime_identifier(target: &str) -> &'static str {
+    match target {
+        "aarch64-apple-darwin" => "osx-arm64",
+        "aarch64-unknown-linux-gnu" => "linux-arm64",
+        "x86_64-apple-darwin" => "osx-x64",
+        "x86_64-unknown-linux-gnu" => "linux-x64",
+        unsupported => panic!("YTSubConverter publish is not configured for target {unsupported}"),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_dotnet<const N: usize>(working_directory: &Path, args: [&str; N]) {
+    let status = Command::new("dotnet")
+        .args(args)
+        .current_dir(working_directory)
+        .status()
+        .expect("failed to start dotnet while building YTSubConverter sidecar");
+
+    assert!(
+        status.success(),
+        "dotnet failed while building YTSubConverter sidecar with status {status}"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn path_to_str(path: &Path) -> &str {
+    path.to_str().unwrap_or_else(|| {
+        panic!(
+            "path contains non-Unicode characters and cannot be passed to a build tool: {}",
+            path.display()
+        )
+    })
 }
 
 fn install_uv(manifest_dir: &Path) -> PathBuf {
