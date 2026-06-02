@@ -48,6 +48,14 @@ impl PotServer {
             *existing_child = Some(child);
         }
     }
+
+    pub fn stop(&self) {
+        if let Ok(mut child) = self.child.lock()
+            && let Some(child) = child.take()
+        {
+            let _ = child.kill();
+        }
+    }
 }
 
 fn start_and_store(app: &AppHandle) -> Result<(), PotServerError> {
@@ -109,11 +117,7 @@ fn spawn_pot_server(app: &AppHandle) -> Result<CommandChild, PotServerError> {
 
 impl Drop for PotServer {
     fn drop(&mut self) {
-        if let Ok(mut child) = self.child.lock()
-            && let Some(child) = child.take()
-        {
-            let _ = child.kill();
-        }
+        self.stop();
     }
 }
 

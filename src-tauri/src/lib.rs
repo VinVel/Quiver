@@ -214,6 +214,19 @@ fn resolve_pot_server_home_args(args: Vec<String>, app: &tauri::AppHandle) -> Ve
         .collect()
 }
 
+#[cfg(desktop)]
+fn focus_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn stop_pot_server(app: &tauri::AppHandle) {
+    app.state::<pot_server::PotServer>().stop();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Runs the Tauri application.
 ///
@@ -221,7 +234,16 @@ fn resolve_pot_server_home_args(args: Vec<String>, app: &tauri::AppHandle) -> Ve
 ///
 /// Panics if Tauri fails to initialize or run the application.
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            focus_main_window(app);
+        }));
+    }
+
+    builder
         .manage(ThemeSettings::default())
         .manage(pot_server::PotServer::default())
         .plugin(tauri_plugin_os::init())
@@ -242,6 +264,17 @@ pub fn run() {
             download_preset_input_fields,
             preview_download_preset
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { .. }
+            | tauri::RunEvent::Exit
+            | tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::CloseRequested { .. },
+                ..
+            } => {
+                stop_pot_server(app);
+            }
+            _ => {}
+        });
 }
