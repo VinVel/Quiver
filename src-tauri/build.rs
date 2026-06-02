@@ -5,26 +5,29 @@ use std::{
     process::Command,
 };
 
-use flate2::read::GzDecoder;
-use sha2::{Digest, Sha256};
-use tar::Archive;
+use sequoia_openpgp::{
+    Cert, KeyHandle, Result as OpenPgpResult,
+    parse::{
+        Parse,
+        stream::{DetachedVerifierBuilder, MessageLayer, MessageStructure, VerificationHelper},
+    },
+    policy::StandardPolicy,
+};
+use sha2::{Digest, Sha256, Sha512};
 use zip::ZipArchive;
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 
 const DENO_VERSION: &str = "2.8.0";
-const PYTHON_VERSION: &str = "3.12";
-const UV_RELEASE_BASE_URL: &str = "https://github.com/astral-sh/uv/releases/latest/download";
+const YT_DLP_RELEASE_BASE_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download";
+const YT_DLP_PUBLIC_KEY_URL: &str =
+    "https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/public.key";
+const YT_DLP_SHA512_SUMS: &str = "SHA2-512SUMS";
+const YT_DLP_SHA512_SIGNATURE: &str = "SHA2-512SUMS.sig";
 const DENO_SIDECAR_NAME: &str = "deno";
 const YT_DLP_SIDECAR_NAME: &str = "yt-dlp";
 const YT_SUB_CONVERTER_SIDECAR_NAME: &str = "ytsubconverter";
-
-#[derive(Clone, Copy)]
-enum UvArchiveFormat {
-    TarGz,
-    Zip,
-}
 
 fn main() {
     configure_build_tracking();
@@ -115,9 +118,6 @@ fn target_profile_dir() -> Option<PathBuf> {
 
 fn configure_build_tracking() {
     println!("cargo:rerun-if-env-changed=TARGET");
-    println!("cargo:rerun-if-changed=../yt-dlp/pyproject.toml");
-    println!("cargo:rerun-if-changed=../yt-dlp/yt_dlp/version.py");
-    println!("cargo:rerun-if-changed=../yt-dlp/bundle/pyinstaller.py");
     println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.Shared");
     println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.UI.Linux");
     println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.UI.Win");
@@ -131,7 +131,6 @@ fn configure_build_tracking() {
 
 fn stage_yt_dlp_sidecar() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let uv_binary = install_uv(&manifest_dir);
     let expected_sidecar = manifest_dir
         .join("binaries")
         .join(sidecar_file_name_for_host(YT_DLP_SIDECAR_NAME));
@@ -140,42 +139,26 @@ fn stage_yt_dlp_sidecar() {
         return;
     }
 
-    let Some(workspace_root) = manifest_dir.parent() else {
-        warn("Could not resolve workspace root; skipping yt-dlp sidecar build.");
-        return;
-    };
-    let yt_dlp_dir = workspace_root.join("yt-dlp");
+    let asset_name = yt_dlp_asset_name(&build_target_triple());
+    let checksums = download_text(&format!("{YT_DLP_RELEASE_BASE_URL}/{YT_DLP_SHA512_SUMS}"));
+    let signature = download(&format!(
+        "{YT_DLP_RELEASE_BASE_URL}/{YT_DLP_SHA512_SIGNATURE}"
+    ));
+    let public_key = download(YT_DLP_PUBLIC_KEY_URL);
+    verify_gpg_signature(
+        checksums.as_bytes(),
+        &signature,
+        &public_key,
+        YT_DLP_SHA512_SUMS,
+    );
 
-    if !yt_dlp_dir.join("pyproject.toml").is_file() {
-        warn(format!(
-            "yt-dlp submodule is missing at {}; skipping sidecar build.",
-            yt_dlp_dir.display()
-        ));
-        return;
-    }
-
-    build_yt_dlp(&yt_dlp_dir, &uv_binary);
-
-    let Some(built_binary) = find_built_binary(&yt_dlp_dir) else {
-        panic!(
-            "yt-dlp build finished but no matching binary was found in {}",
-            yt_dlp_dir.join("dist").display()
-        );
-    };
-
-    fs::create_dir_all(
-        expected_sidecar
-            .parent()
-            .expect("sidecar path should have a parent directory"),
-    )
-    .expect("failed to create sidecar output directory");
-    fs::copy(&built_binary, &expected_sidecar).unwrap_or_else(|error| {
-        panic!(
-            "failed to copy {} to {}: {error}",
-            built_binary.display(),
-            expected_sidecar.display()
-        );
-    });
+    let binary = download(&format!("{YT_DLP_RELEASE_BASE_URL}/{asset_name}"));
+    verify_sha512(&binary, &checksums, asset_name);
+    write_executable(
+        &mut Cursor::new(binary),
+        &expected_sidecar,
+        YT_DLP_SIDECAR_NAME,
+    );
 }
 
 fn stage_yt_sub_converter_sidecar() {
@@ -447,96 +430,15 @@ fn path_to_str(path: &Path) -> &str {
     })
 }
 
-fn install_uv(manifest_dir: &Path) -> PathBuf {
-    let install_root = manifest_dir.join("binaries").join("build");
-    let binary = install_root.join(executable_name("uv"));
-
-    if binary.is_file() {
-        return binary;
-    }
-
-    let host = host_target_triple();
-    let (archive_name, archive_format) = uv_archive(host);
-    let archive_url = format!("{UV_RELEASE_BASE_URL}/{archive_name}");
-    let checksum_url = format!("{archive_url}.sha256");
-    let archive = download(&archive_url);
-    let checksum = download_text(&checksum_url);
-
-    verify_sha256(&archive, &checksum, &archive_name);
-    extract_uv_binary(&archive, archive_format, &binary);
-
-    binary
-}
-
-fn uv_archive(target: &str) -> (String, UvArchiveFormat) {
+fn yt_dlp_asset_name(target: &str) -> &'static str {
     match target {
-        "aarch64-apple-darwin"
-        | "aarch64-unknown-linux-gnu"
-        | "x86_64-apple-darwin"
-        | "x86_64-unknown-linux-gnu" => (format!("uv-{target}.tar.gz"), UvArchiveFormat::TarGz),
-        "aarch64-pc-windows-msvc" | "x86_64-pc-windows-msvc" => {
-            (format!("uv-{target}.zip"), UvArchiveFormat::Zip)
-        }
-        unsupported => panic!("uv release asset is not configured for target {unsupported}"),
+        "aarch64-apple-darwin" | "x86_64-apple-darwin" => "yt-dlp_macos",
+        "aarch64-pc-windows-msvc" => "yt-dlp_arm64.exe",
+        "x86_64-pc-windows-msvc" => "yt-dlp.exe",
+        "aarch64-unknown-linux-gnu" => "yt-dlp_linux_aarch64",
+        "x86_64-unknown-linux-gnu" => "yt-dlp_linux",
+        unsupported => panic!("yt-dlp release asset is not configured for target {unsupported}"),
     }
-}
-
-fn extract_uv_binary(archive: &[u8], archive_format: UvArchiveFormat, binary: &Path) {
-    match archive_format {
-        UvArchiveFormat::TarGz => extract_uv_binary_from_tar_gz(archive, binary),
-        UvArchiveFormat::Zip => extract_uv_binary_from_zip(archive, binary),
-    }
-}
-
-fn extract_uv_binary_from_zip(archive: &[u8], binary: &Path) {
-    let mut archive = ZipArchive::new(Cursor::new(archive))
-        .unwrap_or_else(|error| panic!("failed to open downloaded uv zip archive: {error}"));
-
-    for index in 0..archive.len() {
-        let mut file = archive
-            .by_index(index)
-            .unwrap_or_else(|error| panic!("failed to read uv zip archive entry: {error}"));
-        let Some(file_name) = file.enclosed_name().and_then(|path| {
-            path.file_name()
-                .and_then(|file_name| file_name.to_str())
-                .map(str::to_owned)
-        }) else {
-            continue;
-        };
-
-        if file_name == executable_name("uv") {
-            write_executable(&mut file, binary, "uv");
-            return;
-        }
-    }
-
-    panic!("downloaded uv zip archive did not contain uv");
-}
-
-fn extract_uv_binary_from_tar_gz(archive: &[u8], binary: &Path) {
-    let decoder = GzDecoder::new(Cursor::new(archive));
-    let mut archive = Archive::new(decoder);
-    let entries = archive
-        .entries()
-        .unwrap_or_else(|error| panic!("failed to read downloaded uv tar archive: {error}"));
-
-    for entry in entries {
-        let mut entry =
-            entry.unwrap_or_else(|error| panic!("failed to read uv tar archive entry: {error}"));
-        let path = entry
-            .path()
-            .unwrap_or_else(|error| panic!("failed to read uv tar archive entry path: {error}"));
-        let Some(file_name) = path.file_name().and_then(|file_name| file_name.to_str()) else {
-            continue;
-        };
-
-        if file_name == executable_name("uv") {
-            write_executable(&mut entry, binary, "uv");
-            return;
-        }
-    }
-
-    panic!("downloaded uv tar archive did not contain uv");
 }
 
 fn write_executable(reader: &mut impl std::io::Read, destination: &Path, name: &str) {
@@ -891,57 +793,6 @@ fn remove_file_if_exists(path: &Path) {
     }
 }
 
-fn build_yt_dlp(yt_dlp_dir: &Path, uv_binary: &Path) {
-    run_uv(
-        uv_binary,
-        yt_dlp_dir,
-        [
-            "run",
-            "--project",
-            ".",
-            "--python",
-            PYTHON_VERSION,
-            "--extra",
-            "default",
-            "--group",
-            "pyinstaller",
-            "python",
-            "devscripts/make_lazy_extractors.py",
-        ],
-    );
-    run_uv(
-        uv_binary,
-        yt_dlp_dir,
-        [
-            "run",
-            "--project",
-            ".",
-            "--python",
-            PYTHON_VERSION,
-            "--extra",
-            "default",
-            "--group",
-            "pyinstaller",
-            "python",
-            "-m",
-            "bundle.pyinstaller",
-        ],
-    );
-}
-
-fn run_uv<const N: usize>(uv_binary: &Path, working_directory: &Path, args: [&str; N]) {
-    let status = Command::new(uv_binary)
-        .args(args)
-        .current_dir(working_directory)
-        .status()
-        .expect("failed to start uv while building yt-dlp sidecar");
-
-    assert!(
-        status.success(),
-        "uv failed while building yt-dlp sidecar with status {status}"
-    );
-}
-
 fn executable_name(name: &str) -> String {
     #[cfg(target_os = "windows")]
     {
@@ -951,47 +802,6 @@ fn executable_name(name: &str) -> String {
     #[cfg(not(target_os = "windows"))]
     {
         name.to_string()
-    }
-}
-
-fn find_built_binary(yt_dlp_dir: &Path) -> Option<PathBuf> {
-    let dist = yt_dlp_dir.join("dist");
-
-    built_binary_candidates()
-        .iter()
-        .map(|candidate| dist.join(candidate))
-        .find(|candidate| candidate.is_file())
-}
-
-fn built_binary_candidates() -> Vec<&'static str> {
-    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
-    {
-        vec!["yt-dlp_arm64.exe", "yt-dlp.exe"]
-    }
-
-    #[cfg(all(target_os = "windows", not(target_arch = "aarch64")))]
-    {
-        vec!["yt-dlp.exe"]
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        vec!["yt-dlp_macos"]
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    {
-        vec!["yt-dlp_linux_aarch64", "yt-dlp_linux"]
-    }
-
-    #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
-    {
-        vec!["yt-dlp_linux"]
-    }
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        vec![YT_DLP_SIDECAR_NAME]
     }
 }
 
@@ -1061,6 +871,78 @@ fn verify_sha256(bytes: &[u8], checksum: &str, archive_name: &str) {
         expected, actual,
         "SHA-256 mismatch for downloaded archive {archive_name}"
     );
+}
+
+fn verify_sha512(bytes: &[u8], checksums: &str, asset_name: &str) {
+    let expected = checksums
+        .lines()
+        .filter_map(parse_gnu_checksum_line)
+        .find_map(|(hash, file_name)| (file_name == asset_name).then_some(hash))
+        .unwrap_or_else(|| panic!("signed SHA-512 sums did not contain an entry for {asset_name}"))
+        .to_ascii_lowercase();
+    let actual = format!("{:x}", Sha512::digest(bytes));
+
+    assert_eq!(
+        expected, actual,
+        "SHA-512 mismatch for downloaded yt-dlp asset {asset_name}"
+    );
+}
+
+fn parse_gnu_checksum_line(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+
+    let (hash, file_name) = line.split_once(char::is_whitespace)?;
+    let file_name = file_name.trim_start();
+    let file_name = file_name.strip_prefix('*').unwrap_or(file_name);
+
+    (hash.len() == 128 && hash.chars().all(|character| character.is_ascii_hexdigit()))
+        .then_some((hash, file_name))
+}
+
+fn verify_gpg_signature(data: &[u8], signature: &[u8], public_key: &[u8], signed_file_name: &str) {
+    let cert = Cert::from_bytes(public_key)
+        .unwrap_or_else(|error| panic!("failed to parse yt-dlp public GPG key: {error}"));
+    let policy = StandardPolicy::new();
+    let helper = GpgVerificationHelper { cert };
+    let mut verifier = DetachedVerifierBuilder::from_bytes(signature)
+        .unwrap_or_else(|error| {
+            panic!("failed to parse detached GPG signature for {signed_file_name}: {error}")
+        })
+        .with_policy(&policy, None, helper)
+        .unwrap_or_else(|error| {
+            panic!("failed to create GPG verifier for {signed_file_name}: {error}")
+        });
+
+    verifier
+        .verify_bytes(data)
+        .unwrap_or_else(|error| panic!("GPG verification failed for {signed_file_name}: {error}"));
+}
+
+struct GpgVerificationHelper {
+    cert: Cert,
+}
+
+impl VerificationHelper for GpgVerificationHelper {
+    fn get_certs(&mut self, _ids: &[KeyHandle]) -> OpenPgpResult<Vec<Cert>> {
+        Ok(vec![self.cert.clone()])
+    }
+
+    fn check(&mut self, structure: MessageStructure<'_>) -> OpenPgpResult<()> {
+        for layer in structure {
+            if let MessageLayer::SignatureGroup { results } = layer
+                && results.iter().any(Result::is_ok)
+            {
+                return Ok(());
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "detached signature was not made by the yt-dlp release key"
+        ))
+    }
 }
 
 fn extract_deno_binary(archive: &[u8], expected_sidecar: &Path) {

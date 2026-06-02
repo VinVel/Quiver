@@ -25,11 +25,11 @@ name = "quiver_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-flate2 = "1"
+anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sequoia-openpgp = { version = "2.3", default-features = false, features = ["allow-experimental-crypto", "allow-variable-time-crypto", "crypto-rust"] }
 serde_json = "1"
 sha2 = "0.10"
-tar = "0.4"
 tauri-build = { version = "2", features = [] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
