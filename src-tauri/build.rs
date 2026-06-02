@@ -5,7 +5,9 @@ use std::{
     process::Command,
 };
 
+use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
+use tar::Archive;
 use zip::ZipArchive;
 
 #[cfg(windows)]
@@ -13,9 +15,16 @@ use std::os::windows::fs::MetadataExt;
 
 const DENO_VERSION: &str = "2.8.0";
 const PYTHON_VERSION: &str = "3.12";
+const UV_RELEASE_BASE_URL: &str = "https://github.com/astral-sh/uv/releases/latest/download";
 const DENO_SIDECAR_NAME: &str = "deno";
 const YT_DLP_SIDECAR_NAME: &str = "yt-dlp";
 const YT_SUB_CONVERTER_SIDECAR_NAME: &str = "ytsubconverter";
+
+#[derive(Clone, Copy)]
+enum UvArchiveFormat {
+    TarGz,
+    Zip,
+}
 
 fn main() {
     configure_build_tracking();
@@ -23,6 +32,7 @@ fn main() {
     stage_yt_sub_converter_sidecar();
     stage_deno_sidecar();
     prepare_pot_provider_resource();
+    stop_running_copied_sidecars();
 
     let mut attributes = tauri_build::Attributes::new();
     #[cfg(all(target_os = "windows", target_env = "msvc"))]
@@ -33,6 +43,74 @@ fn main() {
     }
 
     tauri_build::try_build(attributes).expect("failed to build Tauri application metadata");
+}
+
+#[cfg(windows)]
+fn stop_running_copied_sidecars() {
+    let Some(target_profile_dir) = target_profile_dir() else {
+        warn("Could not resolve Cargo target profile directory; skipping copied sidecar cleanup.");
+        return;
+    };
+
+    let sidecars = [
+        target_profile_dir.join(executable_name(DENO_SIDECAR_NAME)),
+        target_profile_dir.join(executable_name(YT_DLP_SIDECAR_NAME)),
+        target_profile_dir.join(executable_name(YT_SUB_CONVERTER_SIDECAR_NAME)),
+    ];
+    let running_sidecars = sidecars
+        .iter()
+        .filter(|path| path.is_file())
+        .map(|path| path_to_str(path))
+        .collect::<Vec<_>>();
+
+    if running_sidecars.is_empty() {
+        return;
+    }
+
+    let sidecar_paths = running_sidecars.join("|");
+    let script = r#"
+$paths = @($env:QUIVER_COPIED_SIDECARS -split '\|' | ForEach-Object {
+    [System.IO.Path]::GetFullPath($_).ToLowerInvariant()
+})
+Get-CimInstance Win32_Process |
+    Where-Object {
+        $_.ExecutablePath -and
+        $paths -contains ([System.IO.Path]::GetFullPath($_.ExecutablePath).ToLowerInvariant())
+    } |
+    ForEach-Object {
+        Write-Host "Stopping stale copied sidecar process $($_.ProcessId): $($_.ExecutablePath)"
+        Stop-Process -Id $_.ProcessId -Force
+    }
+"#;
+    let status = Command::new("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .env("QUIVER_COPIED_SIDECARS", sidecar_paths)
+        .status()
+        .expect("failed to start PowerShell while checking copied sidecar processes");
+
+    assert!(
+        status.success(),
+        "PowerShell failed while checking copied sidecar processes with status {status}"
+    );
+}
+
+#[cfg(not(windows))]
+fn stop_running_copied_sidecars() {}
+
+#[cfg(windows)]
+fn target_profile_dir() -> Option<PathBuf> {
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR")?);
+    out_dir
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
 }
 
 fn configure_build_tracking() {
@@ -53,6 +131,7 @@ fn configure_build_tracking() {
 
 fn stage_yt_dlp_sidecar() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let uv_binary = install_uv(&manifest_dir);
     let expected_sidecar = manifest_dir
         .join("binaries")
         .join(sidecar_file_name_for_host(YT_DLP_SIDECAR_NAME));
@@ -75,7 +154,6 @@ fn stage_yt_dlp_sidecar() {
         return;
     }
 
-    let uv_binary = install_uv(&manifest_dir);
     build_yt_dlp(&yt_dlp_dir, &uv_binary);
 
     let Some(built_binary) = find_built_binary(&yt_dlp_dir) else {
@@ -360,7 +438,6 @@ fn run_dotnet<const N: usize>(working_directory: &Path, args: [&str; N]) {
     );
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn path_to_str(path: &Path) -> &str {
     path.to_str().unwrap_or_else(|| {
         panic!(
@@ -371,29 +448,129 @@ fn path_to_str(path: &Path) -> &str {
 }
 
 fn install_uv(manifest_dir: &Path) -> PathBuf {
-    install_cargo_binary("uv", manifest_dir)
-}
-
-fn install_cargo_binary(name: &str, manifest_dir: &Path) -> PathBuf {
-    let install_root = manifest_dir.join("binaries");
-    let binary = install_root.join("bin").join(executable_name(name));
+    let install_root = manifest_dir.join("binaries").join("build");
+    let binary = install_root.join(executable_name("uv"));
 
     if binary.is_file() {
         return binary;
     }
 
-    let status = Command::new("cargo")
-        .args(["install", name, "--locked", "--root"])
-        .arg(&install_root)
-        .status()
-        .unwrap_or_else(|error| panic!("failed to start cargo while installing {name}: {error}"));
+    let host = host_target_triple();
+    let (archive_name, archive_format) = uv_archive(host);
+    let archive_url = format!("{UV_RELEASE_BASE_URL}/{archive_name}");
+    let checksum_url = format!("{archive_url}.sha256");
+    let archive = download(&archive_url);
+    let checksum = download_text(&checksum_url);
 
-    assert!(
-        status.success(),
-        "cargo install {name} --locked failed with status {status}"
-    );
+    verify_sha256(&archive, &checksum, &archive_name);
+    extract_uv_binary(&archive, archive_format, &binary);
 
     binary
+}
+
+fn uv_archive(target: &str) -> (String, UvArchiveFormat) {
+    match target {
+        "aarch64-apple-darwin"
+        | "aarch64-unknown-linux-gnu"
+        | "x86_64-apple-darwin"
+        | "x86_64-unknown-linux-gnu" => (format!("uv-{target}.tar.gz"), UvArchiveFormat::TarGz),
+        "aarch64-pc-windows-msvc" | "x86_64-pc-windows-msvc" => {
+            (format!("uv-{target}.zip"), UvArchiveFormat::Zip)
+        }
+        unsupported => panic!("uv release asset is not configured for target {unsupported}"),
+    }
+}
+
+fn extract_uv_binary(archive: &[u8], archive_format: UvArchiveFormat, binary: &Path) {
+    match archive_format {
+        UvArchiveFormat::TarGz => extract_uv_binary_from_tar_gz(archive, binary),
+        UvArchiveFormat::Zip => extract_uv_binary_from_zip(archive, binary),
+    }
+}
+
+fn extract_uv_binary_from_zip(archive: &[u8], binary: &Path) {
+    let mut archive = ZipArchive::new(Cursor::new(archive))
+        .unwrap_or_else(|error| panic!("failed to open downloaded uv zip archive: {error}"));
+
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .unwrap_or_else(|error| panic!("failed to read uv zip archive entry: {error}"));
+        let Some(file_name) = file.enclosed_name().and_then(|path| {
+            path.file_name()
+                .and_then(|file_name| file_name.to_str())
+                .map(str::to_owned)
+        }) else {
+            continue;
+        };
+
+        if file_name == executable_name("uv") {
+            write_executable(&mut file, binary, "uv");
+            return;
+        }
+    }
+
+    panic!("downloaded uv zip archive did not contain uv");
+}
+
+fn extract_uv_binary_from_tar_gz(archive: &[u8], binary: &Path) {
+    let decoder = GzDecoder::new(Cursor::new(archive));
+    let mut archive = Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .unwrap_or_else(|error| panic!("failed to read downloaded uv tar archive: {error}"));
+
+    for entry in entries {
+        let mut entry =
+            entry.unwrap_or_else(|error| panic!("failed to read uv tar archive entry: {error}"));
+        let path = entry
+            .path()
+            .unwrap_or_else(|error| panic!("failed to read uv tar archive entry path: {error}"));
+        let Some(file_name) = path.file_name().and_then(|file_name| file_name.to_str()) else {
+            continue;
+        };
+
+        if file_name == executable_name("uv") {
+            write_executable(&mut entry, binary, "uv");
+            return;
+        }
+    }
+
+    panic!("downloaded uv tar archive did not contain uv");
+}
+
+fn write_executable(reader: &mut impl std::io::Read, destination: &Path, name: &str) {
+    let parent = destination
+        .parent()
+        .unwrap_or_else(|| panic!("{name} binary path should have a parent directory"));
+    fs::create_dir_all(parent).unwrap_or_else(|error| {
+        panic!(
+            "failed to create {name} binary output directory at {}: {error}",
+            parent.display()
+        );
+    });
+
+    let mut output = fs::File::create(destination).unwrap_or_else(|error| {
+        panic!(
+            "failed to create {name} binary at {}: {error}",
+            destination.display()
+        );
+    });
+
+    std::io::copy(reader, &mut output).unwrap_or_else(|error| {
+        panic!(
+            "failed to extract {name} binary to {}: {error}",
+            destination.display()
+        );
+    });
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(destination, fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|error| panic!("failed to mark {name} binary executable: {error}"));
+    }
 }
 
 fn prepare_pot_provider_resource() {
@@ -597,7 +774,7 @@ fn copy_directory(source: &Path, destination: &Path) {
 }
 
 fn remove_directory_tree(path: &Path) -> std::io::Result<()> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| remove_error(path, error))?;
+    let metadata = fs::symlink_metadata(path).map_err(|error| remove_error(path, &error))?;
 
     if metadata.file_type().is_symlink() {
         if is_directory_symlink(&metadata) {
@@ -606,8 +783,8 @@ fn remove_directory_tree(path: &Path) -> std::io::Result<()> {
             remove_file_entry(path)
         }
     } else if metadata.is_dir() {
-        for entry in fs::read_dir(path).map_err(|error| remove_error(path, error))? {
-            let entry = entry.map_err(|error| remove_error(path, error))?;
+        for entry in fs::read_dir(path).map_err(|error| remove_error(path, &error))? {
+            let entry = entry.map_err(|error| remove_error(path, &error))?;
             remove_directory_tree(&entry.path())?;
         }
         remove_dir_entry(path)
@@ -633,10 +810,9 @@ fn remove_file_entry(path: &Path) -> std::io::Result<()> {
     fs::remove_file(path).or_else(|error| {
         make_writable(path)?;
         fs::remove_file(path).map_err(|retry_error| {
-            remove_error(
-                path,
-                std::io::Error::new(retry_error.kind(), format!("{error}; retry: {retry_error}")),
-            )
+            let combined_error =
+                std::io::Error::new(retry_error.kind(), format!("{error}; retry: {retry_error}"));
+            remove_error(path, &combined_error)
         })
     })
 }
@@ -645,14 +821,15 @@ fn remove_dir_entry(path: &Path) -> std::io::Result<()> {
     fs::remove_dir(path).or_else(|error| {
         make_writable(path)?;
         fs::remove_dir(path).map_err(|retry_error| {
-            remove_error(
-                path,
-                std::io::Error::new(retry_error.kind(), format!("{error}; retry: {retry_error}")),
-            )
+            let combined_error =
+                std::io::Error::new(retry_error.kind(), format!("{error}; retry: {retry_error}"));
+            remove_error(path, &combined_error)
         })
     })
 }
 
+#[cfg(windows)]
+#[allow(clippy::permissions_set_readonly_false)]
 fn make_writable(path: &Path) -> std::io::Result<()> {
     let mut permissions = fs::symlink_metadata(path)?.permissions();
     if permissions.readonly() {
@@ -662,7 +839,25 @@ fn make_writable(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn remove_error(path: &Path, error: std::io::Error) -> std::io::Error {
+#[cfg(unix)]
+fn make_writable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::symlink_metadata(path)?.permissions();
+    let mode = permissions.mode();
+    if mode & 0o200 == 0 {
+        permissions.set_mode(mode | 0o200);
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(any(windows, unix)))]
+fn make_writable(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn remove_error(path: &Path, error: &std::io::Error) -> std::io::Error {
     std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
 
@@ -864,7 +1059,7 @@ fn verify_sha256(bytes: &[u8], checksum: &str, archive_name: &str) {
 
     assert_eq!(
         expected, actual,
-        "SHA-256 mismatch for downloaded Deno archive {archive_name}"
+        "SHA-256 mismatch for downloaded archive {archive_name}"
     );
 }
 
