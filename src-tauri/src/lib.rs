@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod pot_server;
 mod presets;
+mod subtitle_pipeline;
 mod yt_dlp;
 
 use presets::{DownloadPreset, DownloadPresetInput, PresetCommandPreview, PresetId};
@@ -153,27 +154,36 @@ async fn yt_dlp_version(app: tauri::AppHandle) -> Result<YtDlpCommandOutput, Str
 async fn run_yt_dlp(
     app: tauri::AppHandle,
     run_id: String,
+    preset_id: PresetId,
+    link: String,
     args: Vec<String>,
 ) -> Result<YtDlpCommandOutput, String> {
     let emit_app = app.clone();
     let emit_run_id = run_id.clone();
     let plugin_dirs = yt_dlp_plugin_dirs(&app);
     let args = resolve_pot_server_home_args(args, &app);
-    YtDlpRunner::from_environment_or_bundle(app)
+    let runner = YtDlpRunner::from_environment_or_bundle(app.clone())
         .map_err(|error| error.to_string())?
-        .with_plugin_dirs(plugin_dirs)
-        .run_streaming(args, move |stream, chunk| {
-            let _ = emit_app.emit(
-                "yt-dlp-output",
-                YtDlpOutputChunk {
-                    run_id: emit_run_id.clone(),
-                    stream,
-                    chunk: chunk.to_string(),
-                },
-            );
-        })
-        .await
-        .map_err(|error| error.to_string())
+        .with_plugin_dirs(plugin_dirs);
+    let on_chunk = move |stream, chunk: &str| {
+        let _ = emit_app.emit(
+            "yt-dlp-output",
+            YtDlpOutputChunk {
+                run_id: emit_run_id.clone(),
+                stream,
+                chunk: chunk.to_string(),
+            },
+        );
+    };
+
+    if presets::is_youtube_video_preset(preset_id) {
+        subtitle_pipeline::run_youtube_video_download(app, runner, args, link, on_chunk).await
+    } else {
+        runner
+            .run_streaming(args, on_chunk)
+            .await
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[tauri::command]

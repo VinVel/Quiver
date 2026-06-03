@@ -185,6 +185,13 @@ pub fn command_preview(
     })
 }
 
+pub const fn is_youtube_video_preset(preset_id: PresetId) -> bool {
+    matches!(
+        preset_id,
+        PresetId::YouTubeCookiesVideo | PresetId::YouTubePlainVideo
+    )
+}
+
 fn preset(
     id: PresetId,
     label: &'static str,

@@ -208,6 +208,8 @@ function App() {
 
       const result = await invoke<YtDlpCommandOutput>("run_yt_dlp", {
         runId,
+        presetId: preview.preset.id,
+        link,
         args: preview.args,
       });
       setDownloadResult(result);

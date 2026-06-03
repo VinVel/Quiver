@@ -34,6 +34,7 @@ tauri-build = { version = "2", features = [] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dependencies]
+fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
