@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "quiver",
+  "productName": "Quiver",
   "version": "0.1.0",
   "identifier": "net.velcore.quiver",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "quiver",
+        "title": "Quiver",
         "width": 800,
         "height": 600
       }
