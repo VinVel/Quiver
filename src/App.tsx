@@ -4,6 +4,7 @@ import {
   Download,
   FileAudio,
   FileVideo,
+  Info,
   Link,
   Play,
   Terminal,
@@ -16,6 +17,7 @@ import {
   Panel,
   TextField,
   ToolbarField,
+  Toggle,
   Typography,
 } from "./components/ui";
 import "./App.css";
@@ -72,6 +74,8 @@ function App() {
     null,
   );
   const [commandOutput, setCommandOutput] = useState("");
+  const [isAdvancedSubtitlePipelineEnabled, setIsAdvancedSubtitlePipelineEnabled] =
+    useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -209,6 +213,7 @@ function App() {
         presetId: preview.preset.id,
         link,
         args: preview.args,
+        advancedSubtitlePipeline: shouldRunAdvancedSubtitlePipeline,
       });
       setDownloadResult(result);
       if (!result.success) {
@@ -229,6 +234,10 @@ function App() {
   const outputText = commandOutput || completedOutput;
   const isActionBusy = isPreviewLoading || isDownloading;
   const primaryActionLabel = preview ? "Download" : "Prepare";
+  const isAdvancedSubtitlePipelineAvailable =
+    selectedPreset?.source === "youTube";
+  const shouldRunAdvancedSubtitlePipeline =
+    isAdvancedSubtitlePipelineAvailable && isAdvancedSubtitlePipelineEnabled;
 
   return (
     <div className="quiver-shell">
@@ -298,6 +307,33 @@ function App() {
                   onSelectPreset={setSelectedPresetId}
                 />
               ))}
+              <div className="quiver-preset-divider" aria-hidden="true" />
+              <div className="quiver-advanced-subtitles">
+                <Toggle
+                  checked={shouldRunAdvancedSubtitlePipeline}
+                  disabled={!isAdvancedSubtitlePipelineAvailable}
+                  label="Advanced Subtitle Pipeline"
+                  onClick={() =>
+                    setIsAdvancedSubtitlePipelineEnabled((current) => !current)
+                  }
+                />
+                <Typography
+                  className="quiver-advanced-subtitles__label"
+                  variant="bodySmall"
+                >
+                  Advanced Subtitle Pipeline
+                </Typography>
+                <span
+                  className="quiver-advanced-subtitles__info"
+                  tabIndex={0}
+                >
+                  <Info aria-hidden="true" />
+                  <span className="quiver-advanced-subtitles__tooltip">
+                    Makes subtitles appear closer to YouTube, especially useful
+                    for lyrics videos.
+                  </span>
+                </span>
+              </div>
             </div>
           </Panel>
 

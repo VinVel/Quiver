@@ -157,6 +157,7 @@ async fn run_yt_dlp(
     preset_id: PresetId,
     link: String,
     args: Vec<String>,
+    advanced_subtitle_pipeline: bool,
 ) -> Result<YtDlpCommandOutput, String> {
     let emit_app = app.clone();
     let emit_run_id = run_id.clone();
@@ -176,7 +177,7 @@ async fn run_yt_dlp(
         );
     };
 
-    if presets::is_youtube_video_preset(preset_id) {
+    if advanced_subtitle_pipeline && presets::is_youtube_video_preset(preset_id) {
         subtitle_pipeline::run_youtube_video_download(app, runner, args, link, on_chunk).await
     } else {
         runner

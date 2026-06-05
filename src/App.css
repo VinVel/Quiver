@@ -149,6 +149,77 @@ input {
   background: color-mix(in srgb, var(--outline-variant) 70%, transparent);
 }
 
+.quiver-advanced-subtitles {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-gap-medium);
+  min-height: 2.25rem;
+}
+
+.quiver-advanced-subtitles:has(.ui-toggle:disabled) {
+  color: var(--on-surface-variant);
+}
+
+.quiver-advanced-subtitles__label {
+  min-width: 0;
+}
+
+.quiver-advanced-subtitles__info {
+  position: relative;
+  width: var(--sizing-icon-button-compact-min-height);
+  height: var(--sizing-icon-button-compact-min-height);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--shape-radius-small);
+  color: var(--on-surface-variant);
+  cursor: help;
+}
+
+.quiver-advanced-subtitles__info:hover,
+.quiver-advanced-subtitles__info:focus-visible {
+  background: color-mix(
+    in srgb,
+    var(--surface-container-high) 70%,
+    transparent
+  );
+  color: var(--on-surface);
+}
+
+.quiver-advanced-subtitles__info svg {
+  width: var(--sizing-icon-small);
+  height: var(--sizing-icon-small);
+}
+
+.quiver-advanced-subtitles__tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + var(--spacing-gap-small));
+  z-index: 2;
+  width: min(18rem, 70vw);
+  padding: var(--spacing-feedback-padding-block)
+    var(--spacing-feedback-padding-inline);
+  border-radius: var(--shape-radius-small);
+  background: var(--surface-container-highest);
+  color: var(--on-surface);
+  box-shadow: var(--elevation-panel-raised), var(--elevation-outline-subtle);
+  font-size: var(--typography-body-small-size);
+  line-height: var(--typography-line-height-base);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 0.25rem);
+  transition:
+    opacity var(--motion-duration-base) var(--motion-easing-standard),
+    transform var(--motion-duration-base) var(--motion-easing-standard);
+}
+
+.quiver-advanced-subtitles__info:hover .quiver-advanced-subtitles__tooltip,
+.quiver-advanced-subtitles__info:focus-visible
+  .quiver-advanced-subtitles__tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 .quiver-preset {
   width: 100%;
   min-height: 4.25rem;
