@@ -11,8 +11,11 @@ use tauri::{Emitter, Manager};
 use yt_dlp::{YtDlpCommandOutput, YtDlpOutputStream, YtDlpRunner};
 
 const THEME_SETTINGS_FILE_NAME: &str = "theme-settings.json";
+const INPUT_SETTINGS_FILE_NAME: &str = "input-settings.json";
 const DEFAULT_THEME_MODE: &str = "system";
 const DEFAULT_THEME_PRESET: &str = "crystal";
+const DEFAULT_DOWNLOAD_DIRECTORY: &str = "~/Downloads";
+const DEFAULT_COOKIES_PATH: &str = "~/Downloads/cookies.txt";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +36,27 @@ impl Default for ThemePreferences {
 #[derive(Default)]
 struct ThemeSettings {
     preferences: Mutex<ThemePreferences>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadInputSettings {
+    directory: String,
+    cookies_path: String,
+}
+
+impl Default for DownloadInputSettings {
+    fn default() -> Self {
+        Self {
+            directory: DEFAULT_DOWNLOAD_DIRECTORY.to_string(),
+            cookies_path: DEFAULT_COOKIES_PATH.to_string(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct InputSettings {
+    values: Mutex<DownloadInputSettings>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -162,6 +186,46 @@ fn get_license_html() -> String {
 }
 
 #[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri command state and app handles are extracted by value."
+)]
+fn get_download_input_settings(
+    app: tauri::AppHandle,
+    settings: tauri::State<'_, InputSettings>,
+) -> DownloadInputSettings {
+    load_download_input_settings(&app, &settings)
+}
+
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri command state and app handles are extracted by value."
+)]
+fn set_download_input_settings(
+    app: tauri::AppHandle,
+    input_settings: DownloadInputSettings,
+    settings: tauri::State<'_, InputSettings>,
+) -> Result<DownloadInputSettings, String> {
+    let next_settings = DownloadInputSettings {
+        directory: if input_settings.directory.trim().is_empty() {
+            DEFAULT_DOWNLOAD_DIRECTORY.to_string()
+        } else {
+            input_settings.directory
+        },
+        cookies_path: if input_settings.cookies_path.trim().is_empty() {
+            DEFAULT_COOKIES_PATH.to_string()
+        } else {
+            input_settings.cookies_path
+        },
+    };
+
+    save_download_input_settings(&app, &settings, &next_settings)?;
+
+    Ok(next_settings)
+}
+
+#[tauri::command]
 async fn yt_dlp_version(app: tauri::AppHandle) -> Result<YtDlpCommandOutput, String> {
     YtDlpRunner::from_environment_or_bundle(app)
         .map_err(|error| error.to_string())?
@@ -234,6 +298,14 @@ fn yt_dlp_plugin_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
 }
 
 fn theme_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app_settings_path(app, THEME_SETTINGS_FILE_NAME)
+}
+
+fn input_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app_settings_path(app, INPUT_SETTINGS_FILE_NAME)
+}
+
+fn app_settings_path(app: &tauri::AppHandle, file_name: &str) -> Result<PathBuf, String> {
     let settings_directory = app
         .path()
         .app_config_dir()
@@ -245,7 +317,7 @@ fn theme_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         )
     })?;
 
-    Ok(settings_directory.join(THEME_SETTINGS_FILE_NAME))
+    Ok(settings_directory.join(file_name))
 }
 
 fn load_theme_preferences(
@@ -292,6 +364,52 @@ fn save_theme_preferences(
     Ok(())
 }
 
+fn load_download_input_settings(
+    app: &tauri::AppHandle,
+    settings: &tauri::State<'_, InputSettings>,
+) -> DownloadInputSettings {
+    let input_settings = input_settings_path(app)
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|settings_json| {
+            serde_json::from_str::<DownloadInputSettings>(&settings_json).ok()
+        })
+        .unwrap_or_else(|| {
+            settings.values.lock().map_or_else(
+                |_| DownloadInputSettings::default(),
+                |saved_settings| saved_settings.clone(),
+            )
+        });
+
+    if let Ok(mut saved_settings) = settings.values.lock() {
+        saved_settings.clone_from(&input_settings);
+    }
+
+    input_settings
+}
+
+fn save_download_input_settings(
+    app: &tauri::AppHandle,
+    settings: &tauri::State<'_, InputSettings>,
+    input_settings: &DownloadInputSettings,
+) -> Result<(), String> {
+    let settings_path = input_settings_path(app)?;
+    let settings_json = serde_json::to_string_pretty(input_settings)
+        .map_err(|error| format!("failed to serialize input settings: {error}"))?;
+    fs::write(&settings_path, settings_json).map_err(|error| {
+        format!(
+            "failed to write input settings to {}: {error}",
+            settings_path.display()
+        )
+    })?;
+
+    if let Ok(mut saved_settings) = settings.values.lock() {
+        saved_settings.clone_from(input_settings);
+    }
+
+    Ok(())
+}
+
 #[cfg(desktop)]
 fn focus_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -312,7 +430,9 @@ fn stop_pot_server(app: &tauri::AppHandle) {
 ///
 /// Panics if Tauri fails to initialize or run the application.
 pub fn run() {
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init());
 
     #[cfg(desktop)]
     {
@@ -323,6 +443,7 @@ pub fn run() {
 
     builder
         .manage(ThemeSettings::default())
+        .manage(InputSettings::default())
         .manage(pot_server::PotServer::default())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_shell::init())
@@ -337,6 +458,8 @@ pub fn run() {
             get_theme_preset,
             set_theme_preset,
             get_license_html,
+            get_download_input_settings,
+            set_download_input_settings,
             yt_dlp_version,
             run_yt_dlp,
             download_presets,

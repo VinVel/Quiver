@@ -148,6 +148,18 @@ input {
   gap: var(--spacing-gap-medium);
 }
 
+.quiver-field-grid {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.quiver-path-picker {
+  align-self: start;
+  margin-top: calc(
+    var(--typography-label-size) + var(--spacing-gap-small) + 0.08rem
+  );
+}
+
 .quiver-preset-grid {
   min-height: 0;
   align-content: start;

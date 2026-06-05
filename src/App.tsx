@@ -1,11 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  Cookie,
   Download,
   FileText,
   FileAudio,
   FileVideo,
+  HardDriveDownload,
   Info,
   Link,
   Moon,
@@ -79,6 +82,11 @@ type DownloadPresetInput = {
   cookiesPath?: string;
 };
 
+type DownloadInputSettings = {
+  directory: string;
+  cookiesPath: string;
+};
+
 const defaultDirectory = "~/Downloads";
 const defaultCookiesPath = "~/Downloads/cookies.txt";
 const ytDlpCommandFailedMessage =
@@ -131,6 +139,33 @@ function App() {
     }
 
     void loadPresets();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadInputSettings() {
+      try {
+        const savedInputSettings =
+          await invoke<DownloadInputSettings>("get_download_input_settings");
+        if (cancelled) {
+          return;
+        }
+
+        setDirectory(savedInputSettings.directory);
+        setCookiesPath(savedInputSettings.cookiesPath);
+      } catch (settingsError) {
+        if (!cancelled) {
+          setError(errorToMessage(settingsError));
+        }
+      }
+    }
+
+    void loadInputSettings();
 
     return () => {
       cancelled = true;
@@ -301,6 +336,76 @@ function App() {
     }
   }
 
+  async function saveInputSettings(nextSettings: DownloadInputSettings) {
+    try {
+      await invoke<DownloadInputSettings>("set_download_input_settings", {
+        inputSettings: nextSettings,
+      });
+    } catch (settingsError) {
+      setError(errorToMessage(settingsError));
+    }
+  }
+
+  function updateDirectory(nextDirectory: string) {
+    setDirectory(nextDirectory);
+    void saveInputSettings({
+      directory: nextDirectory,
+      cookiesPath,
+    });
+  }
+
+  function updateCookiesPath(nextCookiesPath: string) {
+    setCookiesPath(nextCookiesPath);
+    void saveInputSettings({
+      directory,
+      cookiesPath: nextCookiesPath,
+    });
+  }
+
+  async function chooseSaveDirectory() {
+    try {
+      const selectedDirectory = await open({
+        title: "Choose save directory",
+        directory: true,
+        multiple: false,
+        defaultPath: directory,
+      });
+
+      if (typeof selectedDirectory === "string") {
+        updateDirectory(selectedDirectory);
+      }
+    } catch (dialogError) {
+      setError(errorToMessage(dialogError));
+    }
+  }
+
+  async function chooseCookiesFile() {
+    try {
+      const selectedFile = await open({
+        title: "Choose cookies file",
+        directory: false,
+        multiple: false,
+        defaultPath: cookiesPath,
+        filters: [
+          {
+            name: "Cookie file",
+            extensions: ["txt"],
+          },
+          {
+            name: "All files",
+            extensions: ["*"],
+          },
+        ],
+      });
+
+      if (typeof selectedFile === "string") {
+        updateCookiesPath(selectedFile);
+      }
+    } catch (dialogError) {
+      setError(errorToMessage(dialogError));
+    }
+  }
+
   async function openLicenses() {
     setIsLicenseOpen(true);
 
@@ -442,13 +547,22 @@ function App() {
               <TextField
                 label="Save directory"
                 value={directory}
-                onChange={(event) => setDirectory(event.currentTarget.value)}
+                onChange={(event) => updateDirectory(event.currentTarget.value)}
                 helperText="Defaults to ~/Downloads."
               />
+              <Button
+                className="quiver-path-picker"
+                variant="icon"
+                iconOnly
+                aria-label="Choose save directory"
+                onClick={() => void chooseSaveDirectory()}
+              >
+                <HardDriveDownload aria-hidden="true" />
+              </Button>
               <TextField
                 label="Cookies file"
                 value={cookiesPath}
-                onChange={(event) => setCookiesPath(event.currentTarget.value)}
+                onChange={(event) => updateCookiesPath(event.currentTarget.value)}
                 disabled={!selectedPreset?.usesCookies}
                 helperText={
                   selectedPreset?.usesCookies
@@ -456,6 +570,16 @@ function App() {
                     : "Disabled for this preset."
                 }
               />
+              <Button
+                className="quiver-path-picker"
+                variant="icon"
+                iconOnly
+                aria-label="Choose cookies file"
+                disabled={!selectedPreset?.usesCookies}
+                onClick={() => void chooseCookiesFile()}
+              >
+                <Cookie aria-hidden="true" />
+              </Button>
             </div>
 
             {error ? <FeedbackMessage tone="error">{error}</FeedbackMessage> : null}

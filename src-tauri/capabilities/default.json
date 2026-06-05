@@ -81,6 +81,7 @@
       ]
     },
     "shell:allow-kill",
-    "opener:default"
+    "opener:default",
+    "dialog:default"
   ]
 }
