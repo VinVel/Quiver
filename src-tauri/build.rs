@@ -505,6 +505,7 @@ fn stage_bgutil_pot_provider_sidecar() {
             .args([
                 "build",
                 "--release",
+                "--locked",
                 "--bin",
                 BGUTIL_POT_PROVIDER_SIDECAR_NAME,
                 "--target",
