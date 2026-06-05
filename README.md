@@ -13,7 +13,7 @@ Quiver is a small desktop GUI for `yt-dlp`. Paste a link, choose the closest pre
 - One-window download flow: URL, preset, output folder, optional cookies file, command preview, and live output.
 - Eight built-in presets for YouTube/general downloads, audio/video, with/without cookies.
 - YouTube-specific POT support through a bundled local `bgutil` provider.
-- Bundled `yt-dlp`, `Deno`, POT provider, and `YTSubConverter`, with bundled `ffmpeg` and `ffprobe` planned for release builds.
+- Bundled `yt-dlp`, `Deno`, POT provider, and `YTSubConverter`, with bundled `ffmpeg` and `ffprobe` for Windows and Linux release builds.
 - Command preview before execution, so you can see exactly what Quiver will run.
 - Live stdout/stderr output while `yt-dlp` is running.
 - Persistent save directory, cookies path, theme mode, and color preset settings.
@@ -54,6 +54,12 @@ The macOS `.dmg` is not signed or notarized. If macOS blocks it after download, 
 xattr -d com.apple.quarantine ~/Downloads/Quiver-*.dmg
 ```
 
+On macOS `ffmpeg` and `ffprobe` need to be installed seperately with [Homebrew](https://brew.sh/):
+
+```sh
+brew install ffmpeg
+```
+
 ### Linux
 
 Use the package for your distribution from the latest release:
@@ -74,7 +80,7 @@ chmod +x Quiver-*.AppImage
 
 ## Advanced Subtitle Pipeline
 
-The Advanced Subtitle Pipeline is optional and only applies to YouTube video presets. It downloads YouTube `srv3` subtitles, converts them through `YTSubConverter`, and remuxes the result into the downloaded media.
+The Advanced Subtitle Pipeline is optional and only applies to YouTube video presets. It downloads YouTube `srv3` subtitles, converts them through `YTSubConverter`, and remuxes the result into the downloaded media. Windows and Linux release builds use bundled `ffmpeg` and `ffprobe`; macOS uses the tools installed through Homebrew.
 
 ## Development
 

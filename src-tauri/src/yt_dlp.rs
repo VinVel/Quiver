@@ -215,15 +215,47 @@ fn bundled_deno_path() -> Option<PathBuf> {
 }
 
 pub fn bundled_ffmpeg_location() -> Option<PathBuf> {
-    current_exe_sidecar_dir_with_tools([FFMPEG_BINARY_NAME, FFPROBE_BINARY_NAME])
+    #[cfg(target_os = "macos")]
+    {
+        None
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        current_exe_sidecar_dir_with_tools([FFMPEG_BINARY_NAME, FFPROBE_BINARY_NAME])
+    }
 }
 
-pub fn bundled_ffmpeg_path() -> Option<PathBuf> {
-    bundled_tool_path(FFMPEG_BINARY_NAME)
+pub fn ffmpeg_path() -> PathBuf {
+    bundled_ffmpeg_path().unwrap_or_else(|| FFMPEG_BINARY_NAME.into())
 }
 
-pub fn bundled_ffprobe_path() -> Option<PathBuf> {
-    bundled_tool_path(FFPROBE_BINARY_NAME)
+pub fn ffprobe_path() -> PathBuf {
+    bundled_ffprobe_path().unwrap_or_else(|| FFPROBE_BINARY_NAME.into())
+}
+
+fn bundled_ffmpeg_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        None
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        bundled_tool_path(FFMPEG_BINARY_NAME)
+    }
+}
+
+fn bundled_ffprobe_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        None
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        bundled_tool_path(FFPROBE_BINARY_NAME)
+    }
 }
 
 fn bundled_tool_path(name: &str) -> Option<PathBuf> {
@@ -232,6 +264,7 @@ fn bundled_tool_path(name: &str) -> Option<PathBuf> {
         .or_else(|| workspace_binaries_sidecar_path(name))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn current_exe_sidecar_dir_with_tools<const N: usize>(names: [&str; N]) -> Option<PathBuf> {
     let current_exe = env::current_exe().ok()?;
     let sidecar_dir = current_exe.parent()?.to_path_buf();
@@ -239,6 +272,7 @@ fn current_exe_sidecar_dir_with_tools<const N: usize>(names: [&str; N]) -> Optio
     sidecar_dir_contains_tools(&sidecar_dir, names).then_some(sidecar_dir)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn sidecar_dir_contains_tools<const N: usize>(directory: &Path, names: [&str; N]) -> bool {
     names
         .into_iter()

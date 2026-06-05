@@ -27,8 +27,6 @@ const YT_DLP_SHA512_SIGNATURE: &str = "SHA2-512SUMS.sig";
 const FFMPEG_BUILDS_RELEASE_BASE_URL: &str =
     "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download";
 const FFMPEG_BUILDS_CHECKSUMS: &str = "checksums.sha256";
-const EVERMEET_FFMPEG_BASE_URL: &str = "https://evermeet.cx/ffmpeg";
-const EVERMEET_FFMPEG_PUBLIC_KEY_URL: &str = "https://evermeet.cx/ffmpeg/0x1A660874.asc";
 const BGUTIL_POT_PROVIDER_SIDECAR_NAME: &str = "bgutil-pot";
 const DENO_SIDECAR_NAME: &str = "deno";
 const FFMPEG_SIDECAR_NAME: &str = "ffmpeg";
@@ -736,6 +734,10 @@ fn stage_deno_sidecar() {
 }
 
 fn stage_ffmpeg_sidecars() {
+    if cfg!(target_os = "macos") {
+        return;
+    }
+
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let expected_ffmpeg = manifest_dir
         .join("binaries")
@@ -748,12 +750,7 @@ fn stage_ffmpeg_sidecars() {
         return;
     }
 
-    if cfg!(target_os = "macos") {
-        stage_evermeet_ffmpeg_sidecar(FFMPEG_SIDECAR_NAME, &expected_ffmpeg);
-        stage_evermeet_ffmpeg_sidecar(FFPROBE_SIDECAR_NAME, &expected_ffprobe);
-    } else {
-        stage_yt_dlp_ffmpeg_builds_sidecars(&expected_ffmpeg, &expected_ffprobe);
-    }
+    stage_yt_dlp_ffmpeg_builds_sidecars(&expected_ffmpeg, &expected_ffprobe);
 }
 
 fn stage_yt_dlp_ffmpeg_builds_sidecars(expected_ffmpeg: &Path, expected_ffprobe: &Path) {
@@ -774,25 +771,6 @@ fn stage_yt_dlp_ffmpeg_builds_sidecars(expected_ffmpeg: &Path, expected_ffprobe:
     } else {
         panic!("unsupported FFmpeg archive format for {asset_name}");
     }
-}
-
-fn stage_evermeet_ffmpeg_sidecar(binary_name: &str, expected_sidecar: &Path) {
-    if expected_sidecar.is_file() {
-        return;
-    }
-
-    let archive_url = format!("{EVERMEET_FFMPEG_BASE_URL}/get/{binary_name}/zip");
-    let signature = download(&format!("{archive_url}/sig"));
-    let public_key = download(EVERMEET_FFMPEG_PUBLIC_KEY_URL);
-    let archive = download(&archive_url);
-
-    verify_gpg_signature(
-        &archive,
-        &signature,
-        &public_key,
-        &format!("Evermeet {binary_name} zip"),
-    );
-    extract_zip_binary(&archive, expected_sidecar, binary_name);
 }
 
 fn ffmpeg_builds_asset_name(target: &str) -> &'static str {

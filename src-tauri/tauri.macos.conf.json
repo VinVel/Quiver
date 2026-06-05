@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/deno",
+      "binaries/bgutil-pot",
+      "binaries/yt-dlp",
+      "binaries/ytsubconverter"
+    ]
+  }
+}
