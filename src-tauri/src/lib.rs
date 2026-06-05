@@ -312,7 +312,7 @@ fn stop_pot_server(app: &tauri::AppHandle) {
 ///
 /// Panics if Tauri fails to initialize or run the application.
 pub fn run() {
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
 
     #[cfg(desktop)]
     {

@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "os:default",
@@ -13,7 +15,13 @@
           "name": "bgutil-pot",
           "cmd": "bgutil-pot",
           "sidecar": true,
-          "args": ["server", "--host", "127.0.0.1", "--port", "4416"]
+          "args": [
+            "server",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "4416"
+          ]
         },
         {
           "name": "yt-dlp",
@@ -43,7 +51,13 @@
           "name": "bgutil-pot",
           "cmd": "bgutil-pot",
           "sidecar": true,
-          "args": ["server", "--host", "127.0.0.1", "--port", "4416"]
+          "args": [
+            "server",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "4416"
+          ]
         },
         {
           "name": "yt-dlp",
@@ -66,6 +80,7 @@
         }
       ]
     },
-    "shell:allow-kill"
+    "shell:allow-kill",
+    "opener:default"
   ]
 }
