@@ -1,9 +1,7 @@
 use std::{
-    env,
     error::Error,
     fmt,
     net::{SocketAddr, TcpStream},
-    path::{Path, PathBuf},
     sync::Mutex,
     time::Duration,
 };
@@ -14,8 +12,9 @@ use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
 };
 
+const POT_SERVER_HOST: &str = "127.0.0.1";
 const POT_SERVER_PORT: u16 = 4416;
-const POT_SERVER_RESOURCE_PATH: &[&str] = &["bgutil-ytdlp-pot-provider", "server"];
+const POT_SERVER_PORT_TEXT: &str = "4416";
 
 #[derive(Default)]
 pub struct PotServer {
@@ -24,8 +23,6 @@ pub struct PotServer {
 
 #[derive(Debug)]
 pub enum PotServerError {
-    MissingProvider(Vec<PathBuf>),
-    MissingNodeModules(PathBuf),
     SpawnFailed(String),
     AlreadyRunning,
 }
@@ -74,26 +71,17 @@ fn spawn_pot_server(app: &AppHandle) -> Result<CommandChild, PotServerError> {
         return Err(PotServerError::AlreadyRunning);
     }
 
-    let provider_server = find_provider_server(app)?;
-    let node_modules = provider_server.join("node_modules");
-
-    if !node_modules.is_dir() {
-        return Err(PotServerError::MissingNodeModules(node_modules));
-    }
-
     let (mut rx, child) = app
         .shell()
-        .sidecar("deno")
+        .sidecar("bgutil-pot")
         .map_err(|error| PotServerError::SpawnFailed(error.to_string()))?
         .args([
-            "run",
-            "--allow-env",
-            "--allow-net",
-            "--allow-ffi=.",
-            "--allow-read=.",
-            "../src/main.ts",
+            "server",
+            "--host",
+            POT_SERVER_HOST,
+            "--port",
+            POT_SERVER_PORT_TEXT,
         ])
-        .current_dir(node_modules)
         .spawn()
         .map_err(|error| PotServerError::SpawnFailed(error.to_string()))?;
 
@@ -124,16 +112,6 @@ impl Drop for PotServer {
 impl fmt::Display for PotServerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingProvider(paths) => write!(
-                formatter,
-                "POT provider server resource not found; searched {}",
-                display_paths(paths)
-            ),
-            Self::MissingNodeModules(path) => write!(
-                formatter,
-                "POT provider dependencies are missing at {}",
-                path.display()
-            ),
             Self::SpawnFailed(error) => write!(formatter, "failed to start POT server: {error}"),
             Self::AlreadyRunning => write!(formatter, "POT server is already reachable"),
         }
@@ -155,67 +133,4 @@ fn is_server_reachable() -> bool {
     addresses
         .iter()
         .any(|address| TcpStream::connect_timeout(address, Duration::from_millis(100)).is_ok())
-}
-
-fn find_provider_server(app: &AppHandle) -> Result<PathBuf, PotServerError> {
-    provider_server_path(app)
-        .ok_or_else(|| PotServerError::MissingProvider(provider_candidate_paths(app)))
-}
-
-pub fn provider_server_path(app: &AppHandle) -> Option<PathBuf> {
-    let candidate_paths = provider_candidate_paths(app);
-
-    for path in &candidate_paths {
-        if is_prepared_provider_server(path) {
-            return Some(path.clone());
-        }
-    }
-
-    None
-}
-
-fn provider_candidate_paths(app: &AppHandle) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    if let Some(workspace_root) = workspace_root() {
-        paths.push(
-            workspace_root
-                .join("src-tauri")
-                .join("resources")
-                .join(provider_relative_path()),
-        );
-    }
-
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        paths.push(resource_dir.join(provider_relative_path()));
-        paths.push(
-            resource_dir
-                .join("resources")
-                .join(provider_relative_path()),
-        );
-    }
-
-    paths
-}
-
-fn is_prepared_provider_server(path: &Path) -> bool {
-    path.join("src").join("main.ts").is_file()
-        && path.join("node_modules").join("commander").is_dir()
-}
-
-fn provider_relative_path() -> PathBuf {
-    POT_SERVER_RESOURCE_PATH.iter().collect()
-}
-
-fn workspace_root() -> Option<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.parent().map(Path::to_path_buf)
-}
-
-fn display_paths(paths: &[PathBuf]) -> String {
-    paths
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
 }

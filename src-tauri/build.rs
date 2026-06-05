@@ -16,15 +16,13 @@ use sequoia_openpgp::{
 use sha2::{Digest, Sha256, Sha512};
 use zip::ZipArchive;
 
-#[cfg(windows)]
-use std::os::windows::fs::MetadataExt;
-
 const DENO_VERSION: &str = "2.8.0";
 const YT_DLP_RELEASE_BASE_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download";
 const YT_DLP_PUBLIC_KEY_URL: &str =
     "https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/public.key";
 const YT_DLP_SHA512_SUMS: &str = "SHA2-512SUMS";
 const YT_DLP_SHA512_SIGNATURE: &str = "SHA2-512SUMS.sig";
+const BGUTIL_POT_PROVIDER_SIDECAR_NAME: &str = "bgutil-pot";
 const DENO_SIDECAR_NAME: &str = "deno";
 const YT_DLP_SIDECAR_NAME: &str = "yt-dlp";
 const YT_SUB_CONVERTER_SIDECAR_NAME: &str = "ytsubconverter";
@@ -34,7 +32,8 @@ fn main() {
     stage_yt_dlp_sidecar();
     stage_yt_sub_converter_sidecar();
     stage_deno_sidecar();
-    prepare_pot_provider_resource();
+    stage_bgutil_pot_provider_sidecar();
+    prepare_pot_provider_plugin_resource();
     stop_running_copied_sidecars();
 
     let mut attributes = tauri_build::Attributes::new();
@@ -56,6 +55,7 @@ fn stop_running_copied_sidecars() {
     };
 
     let sidecars = [
+        target_profile_dir.join(executable_name(BGUTIL_POT_PROVIDER_SIDECAR_NAME)),
         target_profile_dir.join(executable_name(DENO_SIDECAR_NAME)),
         target_profile_dir.join(executable_name(YT_DLP_SIDECAR_NAME)),
         target_profile_dir.join(executable_name(YT_SUB_CONVERTER_SIDECAR_NAME)),
@@ -106,7 +106,6 @@ Get-CimInstance Win32_Process |
 #[cfg(not(windows))]
 fn stop_running_copied_sidecars() {}
 
-#[cfg(windows)]
 fn target_profile_dir() -> Option<PathBuf> {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR")?);
     out_dir
@@ -121,12 +120,9 @@ fn configure_build_tracking() {
     println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.Shared");
     println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.UI.Linux");
     println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.UI.Win");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/package.json");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/deno.lock");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/src/main.ts");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/src/session_manager.ts");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/src/utils.ts");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/plugin/yt_dlp_plugins");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider-rs/Cargo.toml");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider-rs/src");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider-rs/plugin/yt_dlp_plugins");
 }
 
 fn stage_yt_dlp_sidecar() {
@@ -475,66 +471,96 @@ fn write_executable(reader: &mut impl std::io::Read, destination: &Path, name: &
     }
 }
 
-fn prepare_pot_provider_resource() {
+fn stage_bgutil_pot_provider_sidecar() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let Some(workspace_root) = manifest_dir.parent() else {
-        warn("Could not resolve workspace root; skipping POT provider resource preparation.");
+        warn("Could not resolve workspace root; skipping bgutil POT provider sidecar build.");
         return;
     };
-    let source_server = workspace_root
-        .join("bgutil-ytdlp-pot-provider")
-        .join("server");
+    let provider_dir = workspace_root.join("bgutil-ytdlp-pot-provider-rs");
 
-    if !source_server.join("package.json").is_file() {
+    if !provider_dir.join("Cargo.toml").is_file() {
         warn(format!(
-            "bgutil-ytdlp-pot-provider submodule is missing at {}; skipping POT provider resource preparation.",
-            source_server.display()
+            "bgutil-ytdlp-pot-provider-rs submodule is missing at {}; skipping POT provider sidecar build.",
+            provider_dir.display()
         ));
         return;
     }
 
-    let resource_server = manifest_dir
-        .join("resources")
-        .join("bgutil-ytdlp-pot-provider")
-        .join("server");
+    let target = build_target_triple();
+    let expected_sidecar = manifest_dir
+        .join("binaries")
+        .join(sidecar_file_name_for_host(BGUTIL_POT_PROVIDER_SIDECAR_NAME));
+    let built_binary = provider_dir
+        .join("target")
+        .join(&target)
+        .join("release")
+        .join(executable_name(BGUTIL_POT_PROVIDER_SIDECAR_NAME));
 
-    copy_pot_provider_sources(&source_server, &resource_server);
-    copy_pot_provider_plugin(workspace_root, &manifest_dir);
-
-    let commander_package = resource_server.join("node_modules").join("commander");
-    let express_package = resource_server.join("node_modules").join("express");
-    let node_modules = resource_server.join("node_modules");
-    let dev_dependency_package = node_modules
-        .join(".deno")
-        .join("@typescript-eslint+eslint-plugin@8.54.0");
-    let hoisted_dev_dependency_package = node_modules.join("@typescript-eslint");
-
-    if !commander_package.is_dir()
-        || !express_package.is_dir()
-        || is_symlink(&commander_package)
-        || dev_dependency_package.exists()
-        || hoisted_dev_dependency_package.exists()
+    if !built_binary.is_file()
+        || is_source_newer_than(&provider_dir.join("Cargo.toml"), &built_binary)
+        || is_source_newer_than(&provider_dir.join("src"), &built_binary)
     {
-        if node_modules.exists() {
-            remove_directory_tree(&node_modules).unwrap_or_else(|error| {
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "--release",
+                "--bin",
+                BGUTIL_POT_PROVIDER_SIDECAR_NAME,
+                "--target",
+                &target,
+            ])
+            .current_dir(&provider_dir)
+            .status()
+            .unwrap_or_else(|error| {
                 panic!(
-                    "failed to remove stale POT provider dependencies at {}: {error}",
-                    node_modules.display()
+                    "failed to start cargo while building bgutil POT provider sidecar from {}: {error}",
+                    provider_dir.display()
                 )
             });
-        }
-        install_pot_provider_dependencies(&manifest_dir, &resource_server);
+
+        assert!(
+            status.success(),
+            "cargo failed while building bgutil POT provider sidecar with status {status}"
+        );
+    }
+
+    fs::create_dir_all(
+        expected_sidecar
+            .parent()
+            .expect("sidecar path should have a parent directory"),
+    )
+    .expect("failed to create bgutil POT provider sidecar output directory");
+    fs::copy(&built_binary, &expected_sidecar).unwrap_or_else(|error| {
+        panic!(
+            "failed to copy {} to {}: {error}",
+            built_binary.display(),
+            expected_sidecar.display()
+        );
+    });
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&expected_sidecar, fs::Permissions::from_mode(0o755))
+            .expect("failed to mark bgutil POT provider sidecar executable");
     }
 }
 
-fn copy_pot_provider_plugin(workspace_root: &Path, manifest_dir: &Path) {
+fn prepare_pot_provider_plugin_resource() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let Some(workspace_root) = manifest_dir.parent() else {
+        warn("Could not resolve workspace root; skipping POT provider plugin preparation.");
+        return;
+    };
     let source_plugin = workspace_root
-        .join("bgutil-ytdlp-pot-provider")
+        .join("bgutil-ytdlp-pot-provider-rs")
         .join("plugin");
 
     if !source_plugin.join("yt_dlp_plugins").is_dir() {
         warn(format!(
-            "bgutil-ytdlp-pot-provider plugin is missing at {}; skipping yt-dlp plugin resource preparation.",
+            "bgutil-ytdlp-pot-provider-rs plugin is missing at {}; skipping yt-dlp plugin resource preparation.",
             source_plugin.display()
         ));
         return;
@@ -545,6 +571,18 @@ fn copy_pot_provider_plugin(workspace_root: &Path, manifest_dir: &Path) {
         .join("yt-dlp-plugins")
         .join("bgutil");
 
+    remove_generated_resource_directory(&manifest_dir.join("resources"), &plugin_resource);
+    if let Some(target_profile_dir) = target_profile_dir() {
+        let copied_plugin_resource = target_profile_dir
+            .join("resources")
+            .join("yt-dlp-plugins")
+            .join("bgutil");
+        remove_generated_resource_directory(
+            &target_profile_dir.join("resources"),
+            &copied_plugin_resource,
+        );
+    }
+
     copy_file_if_exists(
         &source_plugin.join("pyproject.toml"),
         &plugin_resource.join("pyproject.toml"),
@@ -553,96 +591,6 @@ fn copy_pot_provider_plugin(workspace_root: &Path, manifest_dir: &Path) {
         &source_plugin.join("yt_dlp_plugins"),
         &plugin_resource.join("yt_dlp_plugins"),
     );
-}
-
-fn copy_pot_provider_sources(source_server: &Path, resource_server: &Path) {
-    fs::create_dir_all(resource_server)
-        .expect("failed to create POT provider resource output directory");
-
-    for file_name in [
-        ".gitattributes",
-        ".prettierrc.json",
-        "deno.lock",
-        "README.md",
-        "tsconfig.json",
-    ] {
-        copy_file_if_exists(
-            &source_server.join(file_name),
-            &resource_server.join(file_name),
-        );
-    }
-
-    copy_runtime_package_json(&source_server.join("package.json"), resource_server);
-    remove_file_if_exists(&resource_server.join("package-lock.json"));
-    copy_directory(&source_server.join("src"), &resource_server.join("src"));
-    copy_directory(&source_server.join("types"), &resource_server.join("types"));
-}
-
-fn copy_runtime_package_json(source: &Path, resource_server: &Path) {
-    let package_json = fs::read_to_string(source).unwrap_or_else(|error| {
-        panic!(
-            "failed to read POT provider package.json at {}: {error}",
-            source.display()
-        )
-    });
-    let mut package_json: serde_json::Value =
-        serde_json::from_str(&package_json).unwrap_or_else(|error| {
-            panic!(
-                "failed to parse POT provider package.json at {}: {error}",
-                source.display()
-            )
-        });
-
-    if let Some(package) = package_json.as_object_mut() {
-        package.remove("devDependencies");
-        package.remove("scripts");
-    }
-
-    let destination = resource_server.join("package.json");
-    fs::write(
-        &destination,
-        serde_json::to_string_pretty(&package_json)
-            .expect("failed to serialize runtime POT provider package.json"),
-    )
-    .unwrap_or_else(|error| {
-        panic!(
-            "failed to write runtime POT provider package.json at {}: {error}",
-            destination.display()
-        )
-    });
-}
-
-fn install_pot_provider_dependencies(manifest_dir: &Path, resource_server: &Path) {
-    let deno_binary = manifest_dir
-        .join("binaries")
-        .join(sidecar_file_name_for_host(DENO_SIDECAR_NAME));
-    let status = Command::new(&deno_binary)
-        .args([
-            "install",
-            "--node-modules-dir=manual",
-            "--node-modules-linker=hoisted",
-            "--allow-scripts=npm:canvas",
-            "--frozen=false",
-            "--prod",
-            "--skip-types",
-        ])
-        .current_dir(resource_server)
-        .status()
-        .unwrap_or_else(|error| {
-            panic!(
-                "failed to start Deno while installing POT provider dependencies from {}: {error}",
-                deno_binary.display()
-            )
-        });
-
-    assert!(
-        status.success(),
-        "Deno failed while installing POT provider dependencies with status {status}"
-    );
-}
-
-fn is_symlink(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
 }
 
 fn copy_directory(source: &Path, destination: &Path) {
@@ -675,94 +623,6 @@ fn copy_directory(source: &Path, destination: &Path) {
     }
 }
 
-fn remove_directory_tree(path: &Path) -> std::io::Result<()> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| remove_error(path, &error))?;
-
-    if metadata.file_type().is_symlink() {
-        if is_directory_symlink(&metadata) {
-            remove_dir_entry(path)
-        } else {
-            remove_file_entry(path)
-        }
-    } else if metadata.is_dir() {
-        for entry in fs::read_dir(path).map_err(|error| remove_error(path, &error))? {
-            let entry = entry.map_err(|error| remove_error(path, &error))?;
-            remove_directory_tree(&entry.path())?;
-        }
-        remove_dir_entry(path)
-    } else {
-        remove_file_entry(path)
-    }
-}
-
-fn is_directory_symlink(metadata: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
-        metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
-    }
-
-    #[cfg(not(windows))]
-    {
-        metadata.is_dir()
-    }
-}
-
-fn remove_file_entry(path: &Path) -> std::io::Result<()> {
-    fs::remove_file(path).or_else(|error| {
-        make_writable(path)?;
-        fs::remove_file(path).map_err(|retry_error| {
-            let combined_error =
-                std::io::Error::new(retry_error.kind(), format!("{error}; retry: {retry_error}"));
-            remove_error(path, &combined_error)
-        })
-    })
-}
-
-fn remove_dir_entry(path: &Path) -> std::io::Result<()> {
-    fs::remove_dir(path).or_else(|error| {
-        make_writable(path)?;
-        fs::remove_dir(path).map_err(|retry_error| {
-            let combined_error =
-                std::io::Error::new(retry_error.kind(), format!("{error}; retry: {retry_error}"));
-            remove_error(path, &combined_error)
-        })
-    })
-}
-
-#[cfg(windows)]
-#[allow(clippy::permissions_set_readonly_false)]
-fn make_writable(path: &Path) -> std::io::Result<()> {
-    let mut permissions = fs::symlink_metadata(path)?.permissions();
-    if permissions.readonly() {
-        permissions.set_readonly(false);
-        fs::set_permissions(path, permissions)?;
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn make_writable(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = fs::symlink_metadata(path)?.permissions();
-    let mode = permissions.mode();
-    if mode & 0o200 == 0 {
-        permissions.set_mode(mode | 0o200);
-        fs::set_permissions(path, permissions)?;
-    }
-    Ok(())
-}
-
-#[cfg(not(any(windows, unix)))]
-fn make_writable(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-fn remove_error(path: &Path, error: &std::io::Error) -> std::io::Error {
-    std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
-}
-
 fn copy_file_if_exists(source: &Path, destination: &Path) {
     if !source.is_file() {
         return;
@@ -786,11 +646,45 @@ fn copy_file_if_exists(source: &Path, destination: &Path) {
     });
 }
 
-fn remove_file_if_exists(path: &Path) {
-    if path.is_file() {
-        fs::remove_file(path)
-            .unwrap_or_else(|error| panic!("failed to remove {}: {error}", path.display()));
+fn remove_generated_resource_directory(resources_dir: &Path, path: &Path) {
+    if !path.exists() {
+        return;
     }
+
+    assert!(
+        path.starts_with(resources_dir),
+        "refusing to remove generated directory outside resources: {}",
+        path.display()
+    );
+
+    fs::remove_dir_all(path)
+        .unwrap_or_else(|error| panic!("failed to remove {}: {error}", path.display()));
+}
+
+fn is_source_newer_than(source: &Path, destination: &Path) -> bool {
+    let Ok(destination_modified) = destination
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+    else {
+        return true;
+    };
+
+    source_modified_after(source, destination_modified)
+}
+
+fn source_modified_after(source: &Path, destination_modified: std::time::SystemTime) -> bool {
+    if source.is_dir() {
+        return fs::read_dir(source).is_ok_and(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|entry| source_modified_after(&entry.path(), destination_modified))
+        });
+    }
+
+    source
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| modified > destination_modified)
 }
 
 fn executable_name(name: &str) -> String {

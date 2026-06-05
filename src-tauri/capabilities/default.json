@@ -10,9 +10,10 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         {
-          "name": "deno",
-          "cmd": "deno",
-          "sidecar": true
+          "name": "bgutil-pot",
+          "cmd": "bgutil-pot",
+          "sidecar": true,
+          "args": ["server", "--host", "127.0.0.1", "--port", "4416"]
         },
         {
           "name": "yt-dlp",
@@ -39,9 +40,10 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "deno",
-          "cmd": "deno",
-          "sidecar": true
+          "name": "bgutil-pot",
+          "cmd": "bgutil-pot",
+          "sidecar": true,
+          "args": ["server", "--host", "127.0.0.1", "--port", "4416"]
         },
         {
           "name": "yt-dlp",

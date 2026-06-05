@@ -3,7 +3,7 @@ use std::{
     env,
     error::Error,
     ffi::OsStr,
-    fmt,
+    fmt, fs,
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -15,6 +15,7 @@ use tauri::AppHandle;
 use tauri_plugin_shell::{ShellExt, process::CommandEvent};
 
 const YT_DLP_BINARY_ENV: &str = "QUIVER_YT_DLP_BINARY";
+const DENO_BINARY_NAME: &str = "deno";
 const YT_DLP_BINARY_NAME: &str = "yt-dlp";
 const YT_DLP_PLUGINS_RESOURCE_PATH: &[&str] = &["yt-dlp-plugins"];
 
@@ -166,17 +167,64 @@ impl YtDlpRunner {
     {
         let mut command_args = Vec::new();
 
+        let args = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        if !has_js_runtime_args(&args)
+            && let Some(deno_path) = bundled_deno_path()
+        {
+            command_args.push("--js-runtimes".to_string());
+            command_args.push(format!("deno:{}", deno_path.display()));
+        }
+
         for plugin_dir in &self.plugin_dirs {
             command_args.push("--plugin-dirs".to_string());
             command_args.push(plugin_dir.display().to_string());
         }
 
-        command_args.extend(
-            args.into_iter()
-                .map(|arg| arg.as_ref().to_string_lossy().into_owned()),
-        );
+        command_args.extend(args);
         command_args
     }
+}
+
+fn has_js_runtime_args(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg == "--js-runtimes" || arg.starts_with("--js-runtimes="))
+}
+
+fn bundled_deno_path() -> Option<PathBuf> {
+    current_exe_sidecar_path(DENO_BINARY_NAME)
+        .filter(|path| path.is_file())
+        .or_else(|| workspace_binaries_sidecar_path(DENO_BINARY_NAME))
+}
+
+fn current_exe_sidecar_path(name: &str) -> Option<PathBuf> {
+    let current_exe = env::current_exe().ok()?;
+    let sidecar_dir = current_exe.parent()?;
+
+    Some(sidecar_dir.join(executable_name(name)))
+}
+
+fn workspace_binaries_sidecar_path(name: &str) -> Option<PathBuf> {
+    let binaries_dir = workspace_root()?.join("src-tauri").join("binaries");
+    let prefix = format!("{name}-");
+    let extension = executable_extension();
+
+    fs::read_dir(binaries_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|file_name| {
+                        file_name.starts_with(&prefix) && file_name.ends_with(extension)
+                    })
+        })
 }
 
 fn run_override(binary_path: PathBuf, args: Vec<String>) -> Result<YtDlpCommandOutput, YtDlpError> {
@@ -369,6 +417,20 @@ pub fn candidate_plugin_dirs(resource_dir: Option<&Path>) -> Vec<PathBuf> {
 
 fn plugin_relative_path() -> PathBuf {
     YT_DLP_PLUGINS_RESOURCE_PATH.iter().collect()
+}
+
+fn executable_name(name: &str) -> String {
+    let extension = executable_extension();
+
+    if extension.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}{extension}")
+    }
+}
+
+fn executable_extension() -> &'static str {
+    if cfg!(windows) { ".exe" } else { "" }
 }
 
 #[cfg(test)]

@@ -162,7 +162,6 @@ async fn run_yt_dlp(
     let emit_app = app.clone();
     let emit_run_id = run_id.clone();
     let plugin_dirs = yt_dlp_plugin_dirs(&app);
-    let args = resolve_pot_server_home_args(args, &app);
     let runner = YtDlpRunner::from_environment_or_bundle(app.clone())
         .map_err(|error| error.to_string())?
         .with_plugin_dirs(plugin_dirs);
@@ -212,17 +211,6 @@ fn preview_download_preset(
 fn yt_dlp_plugin_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let resource_dir = app.path().resource_dir().ok();
     yt_dlp::candidate_plugin_dirs(resource_dir.as_deref())
-}
-
-fn resolve_pot_server_home_args(args: Vec<String>, app: &tauri::AppHandle) -> Vec<String> {
-    let Some(server_home) = pot_server::provider_server_path(app) else {
-        return args;
-    };
-    let server_home = server_home.display().to_string();
-
-    args.into_iter()
-        .map(|arg| arg.replace("__QUIVER_POT_SERVER_HOME__", &server_home))
-        .collect()
 }
 
 #[cfg(desktop)]

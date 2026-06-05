@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 const COOKIE_PATH: &str = "~/Downloads/cookies.txt";
-const POT_BASE_URL: &str = "http://localhost:4416";
-const POT_SERVER_HOME: &str = "__QUIVER_POT_SERVER_HOME__";
+const POT_BASE_URL: &str = "http://127.0.0.1:4416";
 const DEFAULT_DOWNLOAD_DIRECTORY: &str = "~/Downloads";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -317,8 +316,6 @@ fn youtube_args() -> Vec<String> {
         "youtube:player-client=default,mweb,web_safari,tv_embedded".to_string(),
         "--extractor-args".to_string(),
         format!("youtubepot-bgutilhttp:base_url={POT_BASE_URL}"),
-        "--extractor-args".to_string(),
-        format!("youtubepot-bgutilscript:server_home={POT_SERVER_HOME}"),
     ]
 }
 
