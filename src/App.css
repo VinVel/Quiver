@@ -18,12 +18,14 @@ html,
 body,
 #root {
   min-height: 100%;
+  height: 100%;
 }
 
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  height: 100vh;
   background: var(--surface);
 }
 
@@ -33,10 +35,12 @@ input {
 }
 
 .quiver-shell {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   background: color-mix(in srgb, var(--surface) 96%, var(--primary));
+  overflow: hidden;
 }
 
 .quiver-command-actions,
@@ -52,6 +56,7 @@ input {
   gap: var(--spacing-gap-large);
   padding: var(--spacing-safe-area-padding);
   padding-inline: var(--spacing-gap-large);
+  overflow: hidden;
 }
 
 .quiver-command-row {
@@ -139,7 +144,6 @@ input {
 
 .quiver-preset-grid {
   min-height: 0;
-  overflow: auto;
   align-content: start;
 }
 
@@ -314,6 +318,7 @@ input {
   height: 100%;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .quiver-preview .ui-pill {
@@ -328,10 +333,12 @@ input {
 }
 
 .quiver-command-preview {
+  width: 100%;
+  height: 100%;
   min-height: 0;
   max-height: none;
   overflow: auto;
-  margin: var(--spacing-gap-large) 0 0;
+  margin: 0;
   padding: var(--spacing-card-padding);
   border-radius: var(--shape-radius-small);
   background: var(--surface-container-lowest);
@@ -339,6 +346,7 @@ input {
   box-shadow: inset 0 0 0 1px
     color-mix(in srgb, var(--outline-variant) 72%, transparent);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
@@ -377,6 +385,20 @@ input {
 }
 
 @media (max-width: 68rem) {
+  body {
+    height: auto;
+  }
+
+  .quiver-shell {
+    min-height: 100vh;
+    height: auto;
+    overflow: visible;
+  }
+
+  .quiver-main {
+    overflow: visible;
+  }
+
   .quiver-workspace {
     grid-template-columns: 1fr;
     grid-template-rows: none;
