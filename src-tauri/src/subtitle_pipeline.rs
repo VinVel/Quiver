@@ -1,4 +1,7 @@
-use crate::yt_dlp::{YtDlpCommandOutput, YtDlpError, YtDlpOutputStream, YtDlpRunner};
+use crate::yt_dlp::{
+    YtDlpCommandOutput, YtDlpError, YtDlpOutputStream, YtDlpRunner, bundled_ffmpeg_path,
+    bundled_ffprobe_path,
+};
 use std::{
     ffi::OsStr,
     fmt::Write,
@@ -245,7 +248,7 @@ async fn remux_subtitles(
         )
     })?;
 
-    emit_pipeline_log(on_chunk, "Running ffmpeg from PATH.\n");
+    emit_pipeline_log(on_chunk, "Running bundled ffmpeg when available.\n");
     let existing_subtitle_count = subtitle_stream_count(&temp_media_path).await?;
     emit_pipeline_log(
         on_chunk,
@@ -345,7 +348,7 @@ async fn run_ffmpeg_remux(
     existing_subtitle_count: usize,
 ) -> Result<std::process::Output, YtDlpError> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut command = Command::new("ffmpeg");
+        let mut command = Command::new(bundled_ffmpeg_path().unwrap_or_else(|| "ffmpeg".into()));
         command
             .arg("-y")
             .arg("-i")
@@ -394,7 +397,7 @@ async fn run_ffmpeg_remux(
 async fn subtitle_stream_count(media_path: &Path) -> Result<usize, String> {
     let media_path = media_path.to_path_buf();
     let output = tauri::async_runtime::spawn_blocking(move || {
-        Command::new("ffprobe")
+        Command::new(bundled_ffprobe_path().unwrap_or_else(|| "ffprobe".into()))
             .arg("-v")
             .arg("error")
             .arg("-select_streams")

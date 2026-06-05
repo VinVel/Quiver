@@ -14,6 +14,8 @@ use sequoia_openpgp::{
     policy::StandardPolicy,
 };
 use sha2::{Digest, Sha256, Sha512};
+use tar::Archive;
+use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 const DENO_VERSION: &str = "2.8.0";
@@ -22,8 +24,15 @@ const YT_DLP_PUBLIC_KEY_URL: &str =
     "https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/public.key";
 const YT_DLP_SHA512_SUMS: &str = "SHA2-512SUMS";
 const YT_DLP_SHA512_SIGNATURE: &str = "SHA2-512SUMS.sig";
+const FFMPEG_BUILDS_RELEASE_BASE_URL: &str =
+    "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download";
+const FFMPEG_BUILDS_CHECKSUMS: &str = "checksums.sha256";
+const EVERMEET_FFMPEG_BASE_URL: &str = "https://evermeet.cx/ffmpeg";
+const EVERMEET_FFMPEG_PUBLIC_KEY_URL: &str = "https://evermeet.cx/ffmpeg/0x1A660874.asc";
 const BGUTIL_POT_PROVIDER_SIDECAR_NAME: &str = "bgutil-pot";
 const DENO_SIDECAR_NAME: &str = "deno";
+const FFMPEG_SIDECAR_NAME: &str = "ffmpeg";
+const FFPROBE_SIDECAR_NAME: &str = "ffprobe";
 const YT_DLP_SIDECAR_NAME: &str = "yt-dlp";
 const YT_SUB_CONVERTER_SIDECAR_NAME: &str = "ytsubconverter";
 
@@ -32,6 +41,7 @@ fn main() {
     stage_yt_dlp_sidecar();
     stage_yt_sub_converter_sidecar();
     stage_deno_sidecar();
+    stage_ffmpeg_sidecars();
     stage_bgutil_pot_provider_sidecar();
     prepare_pot_provider_plugin_resource();
     stop_running_copied_sidecars();
@@ -57,6 +67,8 @@ fn stop_running_copied_sidecars() {
     let sidecars = [
         target_profile_dir.join(executable_name(BGUTIL_POT_PROVIDER_SIDECAR_NAME)),
         target_profile_dir.join(executable_name(DENO_SIDECAR_NAME)),
+        target_profile_dir.join(executable_name(FFMPEG_SIDECAR_NAME)),
+        target_profile_dir.join(executable_name(FFPROBE_SIDECAR_NAME)),
         target_profile_dir.join(executable_name(YT_DLP_SIDECAR_NAME)),
         target_profile_dir.join(executable_name(YT_SUB_CONVERTER_SIDECAR_NAME)),
     ];
@@ -723,6 +735,93 @@ fn stage_deno_sidecar() {
     extract_deno_binary(&archive, &expected_sidecar);
 }
 
+fn stage_ffmpeg_sidecars() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let expected_ffmpeg = manifest_dir
+        .join("binaries")
+        .join(sidecar_file_name_for_host(FFMPEG_SIDECAR_NAME));
+    let expected_ffprobe = manifest_dir
+        .join("binaries")
+        .join(sidecar_file_name_for_host(FFPROBE_SIDECAR_NAME));
+
+    if expected_ffmpeg.is_file() && expected_ffprobe.is_file() {
+        return;
+    }
+
+    if cfg!(target_os = "macos") {
+        stage_evermeet_ffmpeg_sidecar(FFMPEG_SIDECAR_NAME, &expected_ffmpeg);
+        stage_evermeet_ffmpeg_sidecar(FFPROBE_SIDECAR_NAME, &expected_ffprobe);
+    } else {
+        stage_yt_dlp_ffmpeg_builds_sidecars(&expected_ffmpeg, &expected_ffprobe);
+    }
+}
+
+fn stage_yt_dlp_ffmpeg_builds_sidecars(expected_ffmpeg: &Path, expected_ffprobe: &Path) {
+    let asset_name = ffmpeg_builds_asset_name(&build_target_triple());
+    let checksums = download_text(&format!(
+        "{FFMPEG_BUILDS_RELEASE_BASE_URL}/{FFMPEG_BUILDS_CHECKSUMS}"
+    ));
+    let archive = download(&format!("{FFMPEG_BUILDS_RELEASE_BASE_URL}/{asset_name}"));
+
+    verify_sha256_for_file(&archive, &checksums, asset_name);
+
+    if has_extension(asset_name, "zip") {
+        extract_zip_binary(&archive, expected_ffmpeg, FFMPEG_SIDECAR_NAME);
+        extract_zip_binary(&archive, expected_ffprobe, FFPROBE_SIDECAR_NAME);
+    } else if has_compound_extensions(asset_name, "tar", "xz") {
+        extract_tar_xz_binary(&archive, expected_ffmpeg, FFMPEG_SIDECAR_NAME);
+        extract_tar_xz_binary(&archive, expected_ffprobe, FFPROBE_SIDECAR_NAME);
+    } else {
+        panic!("unsupported FFmpeg archive format for {asset_name}");
+    }
+}
+
+fn stage_evermeet_ffmpeg_sidecar(binary_name: &str, expected_sidecar: &Path) {
+    if expected_sidecar.is_file() {
+        return;
+    }
+
+    let archive_url = format!("{EVERMEET_FFMPEG_BASE_URL}/get/{binary_name}/zip");
+    let signature = download(&format!("{archive_url}/sig"));
+    let public_key = download(EVERMEET_FFMPEG_PUBLIC_KEY_URL);
+    let archive = download(&archive_url);
+
+    verify_gpg_signature(
+        &archive,
+        &signature,
+        &public_key,
+        &format!("Evermeet {binary_name} zip"),
+    );
+    extract_zip_binary(&archive, expected_sidecar, binary_name);
+}
+
+fn ffmpeg_builds_asset_name(target: &str) -> &'static str {
+    match target {
+        "aarch64-pc-windows-msvc" => "ffmpeg-master-latest-winarm64-gpl.zip",
+        "x86_64-pc-windows-msvc" => "ffmpeg-master-latest-win64-gpl.zip",
+        "aarch64-unknown-linux-gnu" => "ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+        "x86_64-unknown-linux-gnu" => "ffmpeg-master-latest-linux64-gpl.tar.xz",
+        unsupported => panic!("FFmpeg release asset is not configured for target {unsupported}"),
+    }
+}
+
+fn has_extension(path: &str, extension: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|actual_extension| actual_extension.to_str())
+        .is_some_and(|actual_extension| actual_extension.eq_ignore_ascii_case(extension))
+}
+
+fn has_compound_extensions(path: &str, stem_extension: &str, extension: &str) -> bool {
+    let path = Path::new(path);
+
+    has_extension(path.to_string_lossy().as_ref(), extension)
+        && path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| has_extension(stem, stem_extension))
+}
+
 fn deno_archive_name(target: &str) -> String {
     match target {
         "aarch64-apple-darwin"
@@ -768,6 +867,21 @@ fn verify_sha256(bytes: &[u8], checksum: &str, archive_name: &str) {
     );
 }
 
+fn verify_sha256_for_file(bytes: &[u8], checksums: &str, asset_name: &str) {
+    let expected = checksums
+        .lines()
+        .filter_map(parse_sha256_checksum_line)
+        .find_map(|(hash, file_name)| (file_name == asset_name).then_some(hash))
+        .unwrap_or_else(|| panic!("SHA-256 sums did not contain an entry for {asset_name}"))
+        .to_ascii_lowercase();
+    let actual = format!("{:x}", Sha256::digest(bytes));
+
+    assert_eq!(
+        expected, actual,
+        "SHA-256 mismatch for downloaded archive {asset_name}"
+    );
+}
+
 fn verify_sha512(bytes: &[u8], checksums: &str, asset_name: &str) {
     let expected = checksums
         .lines()
@@ -781,6 +895,20 @@ fn verify_sha512(bytes: &[u8], checksums: &str, asset_name: &str) {
         expected, actual,
         "SHA-512 mismatch for downloaded yt-dlp asset {asset_name}"
     );
+}
+
+fn parse_sha256_checksum_line(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+
+    let (hash, file_name) = line.split_once(char::is_whitespace)?;
+    let file_name = file_name.trim_start();
+    let file_name = file_name.strip_prefix('*').unwrap_or(file_name);
+
+    (hash.len() == 64 && hash.chars().all(|character| character.is_ascii_hexdigit()))
+        .then_some((hash, file_name))
 }
 
 fn parse_gnu_checksum_line(line: &str) -> Option<(&str, &str)> {
@@ -875,6 +1003,62 @@ fn extract_deno_binary(archive: &[u8], expected_sidecar: &Path) {
         fs::set_permissions(expected_sidecar, fs::Permissions::from_mode(0o755))
             .expect("failed to mark Deno sidecar executable");
     }
+}
+
+fn extract_zip_binary(archive: &[u8], expected_sidecar: &Path, binary_name: &str) {
+    let mut archive = ZipArchive::new(Cursor::new(archive))
+        .unwrap_or_else(|error| panic!("failed to open downloaded {binary_name} zip: {error}"));
+    let expected_name = executable_name(binary_name);
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap_or_else(|error| {
+            panic!("failed to read {binary_name} zip entry {index}: {error}")
+        });
+
+        if !entry.is_file() || !archive_entry_matches_binary(entry.name(), &expected_name) {
+            continue;
+        }
+
+        write_executable(&mut entry, expected_sidecar, binary_name);
+        return;
+    }
+
+    panic!("downloaded {binary_name} zip did not contain {expected_name}");
+}
+
+fn extract_tar_xz_binary(archive: &[u8], expected_sidecar: &Path, binary_name: &str) {
+    let decoder = XzDecoder::new(Cursor::new(archive));
+    let mut archive = Archive::new(decoder);
+    let expected_name = executable_name(binary_name);
+    let entries = archive
+        .entries()
+        .unwrap_or_else(|error| panic!("failed to read downloaded {binary_name} tar.xz: {error}"));
+
+    for entry in entries {
+        let mut entry =
+            entry.unwrap_or_else(|error| panic!("failed to read {binary_name} tar entry: {error}"));
+        let entry_path = entry
+            .path()
+            .unwrap_or_else(|error| panic!("failed to read {binary_name} tar entry path: {error}"));
+        let entry_name = entry_path.to_string_lossy().into_owned();
+
+        if !archive_entry_matches_binary(&entry_name, &expected_name) {
+            continue;
+        }
+
+        write_executable(&mut entry, expected_sidecar, binary_name);
+        return;
+    }
+
+    panic!("downloaded {binary_name} tar.xz did not contain {expected_name}");
+}
+
+fn archive_entry_matches_binary(entry_name: &str, expected_name: &str) -> bool {
+    let normalized_name = entry_name.replace('\\', "/");
+
+    normalized_name == expected_name
+        || normalized_name.ends_with(&format!("/{expected_name}"))
+        || normalized_name.ends_with(&format!("/bin/{expected_name}"))
 }
 
 fn sidecar_file_name_for_host(sidecar_name: &str) -> String {

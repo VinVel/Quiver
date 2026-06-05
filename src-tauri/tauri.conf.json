@@ -26,6 +26,8 @@
     "targets": "all",
     "externalBin": [
       "binaries/deno",
+      "binaries/ffmpeg",
+      "binaries/ffprobe",
       "binaries/bgutil-pot",
       "binaries/yt-dlp",
       "binaries/ytsubconverter"

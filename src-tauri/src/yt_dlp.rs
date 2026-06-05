@@ -16,6 +16,8 @@ use tauri_plugin_shell::{ShellExt, process::CommandEvent};
 
 const YT_DLP_BINARY_ENV: &str = "QUIVER_YT_DLP_BINARY";
 const DENO_BINARY_NAME: &str = "deno";
+const FFMPEG_BINARY_NAME: &str = "ffmpeg";
+const FFPROBE_BINARY_NAME: &str = "ffprobe";
 const YT_DLP_BINARY_NAME: &str = "yt-dlp";
 const YT_DLP_PLUGINS_RESOURCE_PATH: &[&str] = &["yt-dlp-plugins"];
 
@@ -179,6 +181,13 @@ impl YtDlpRunner {
             command_args.push(format!("deno:{}", deno_path.display()));
         }
 
+        if !has_ffmpeg_location_args(&args)
+            && let Some(ffmpeg_location) = bundled_ffmpeg_location()
+        {
+            command_args.push("--ffmpeg-location".to_string());
+            command_args.push(ffmpeg_location.display().to_string());
+        }
+
         for plugin_dir in &self.plugin_dirs {
             command_args.push("--plugin-dirs".to_string());
             command_args.push(plugin_dir.display().to_string());
@@ -194,10 +203,46 @@ fn has_js_runtime_args(args: &[String]) -> bool {
         .any(|arg| arg == "--js-runtimes" || arg.starts_with("--js-runtimes="))
 }
 
+fn has_ffmpeg_location_args(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg == "--ffmpeg-location" || arg.starts_with("--ffmpeg-location="))
+}
+
 fn bundled_deno_path() -> Option<PathBuf> {
     current_exe_sidecar_path(DENO_BINARY_NAME)
         .filter(|path| path.is_file())
         .or_else(|| workspace_binaries_sidecar_path(DENO_BINARY_NAME))
+}
+
+pub fn bundled_ffmpeg_location() -> Option<PathBuf> {
+    current_exe_sidecar_dir_with_tools([FFMPEG_BINARY_NAME, FFPROBE_BINARY_NAME])
+}
+
+pub fn bundled_ffmpeg_path() -> Option<PathBuf> {
+    bundled_tool_path(FFMPEG_BINARY_NAME)
+}
+
+pub fn bundled_ffprobe_path() -> Option<PathBuf> {
+    bundled_tool_path(FFPROBE_BINARY_NAME)
+}
+
+fn bundled_tool_path(name: &str) -> Option<PathBuf> {
+    current_exe_sidecar_path(name)
+        .filter(|path| path.is_file())
+        .or_else(|| workspace_binaries_sidecar_path(name))
+}
+
+fn current_exe_sidecar_dir_with_tools<const N: usize>(names: [&str; N]) -> Option<PathBuf> {
+    let current_exe = env::current_exe().ok()?;
+    let sidecar_dir = current_exe.parent()?.to_path_buf();
+
+    sidecar_dir_contains_tools(&sidecar_dir, names).then_some(sidecar_dir)
+}
+
+fn sidecar_dir_contains_tools<const N: usize>(directory: &Path, names: [&str; N]) -> bool {
+    names
+        .into_iter()
+        .all(|name| directory.join(executable_name(name)).is_file())
 }
 
 fn current_exe_sidecar_path(name: &str) -> Option<PathBuf> {
