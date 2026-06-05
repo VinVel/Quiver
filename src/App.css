@@ -39,28 +39,10 @@ input {
   background: color-mix(in srgb, var(--surface) 96%, var(--primary));
 }
 
-.quiver-status,
 .quiver-command-actions,
-.quiver-icon-group,
-.quiver-preview__meta,
-.quiver-output__meta {
+.quiver-preview__meta {
   display: flex;
   align-items: center;
-}
-
-.quiver-status svg {
-  width: var(--sizing-icon-medium);
-  height: var(--sizing-icon-medium);
-}
-
-.quiver-status {
-  justify-content: flex-end;
-  gap: var(--spacing-gap-medium);
-  color: var(--on-surface-variant);
-}
-
-.quiver-status svg:first-child {
-  color: var(--primary);
 }
 
 .quiver-main {
@@ -69,10 +51,11 @@ input {
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: var(--spacing-gap-large);
   padding: var(--spacing-safe-area-padding);
+  padding-inline: var(--spacing-gap-large);
 }
 
 .quiver-command-row {
-  width: min(82rem, 100%);
+  width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -80,25 +63,17 @@ input {
   margin: 0 auto;
 }
 
-.quiver-url-panel {
-  padding: var(--spacing-gap-medium);
-  border-radius: var(--shape-radius-small);
-  background: var(--surface-container-low);
-  box-shadow: var(--elevation-panel-raised), var(--elevation-outline-subtle);
-}
-
-.quiver-url-panel .ui-toolbar-field {
+.quiver-url-field {
   min-height: 3.25rem;
   background: var(--surface-container);
 }
 
-.quiver-url-panel .ui-toolbar-field__input {
+.quiver-url-field .ui-toolbar-field__input {
   font-size: var(--typography-title-medium-size);
 }
 
 .quiver-command-actions,
-.quiver-preview__meta,
-.quiver-output__meta {
+.quiver-preview__meta {
   gap: var(--spacing-gap-small);
 }
 
@@ -106,47 +81,48 @@ input {
   min-width: 9.5rem;
 }
 
-.quiver-toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-gap-medium);
-  min-height: 3rem;
+.quiver-divider {
+  width: 100%;
+  height: 1px;
+  margin: 0 auto;
   border-bottom: 1px solid
     color-mix(in srgb, var(--outline-variant) 60%, transparent);
 }
 
-.quiver-toolbar__spacer {
-  flex: 1;
-}
-
-.quiver-icon-group {
-  gap: 0;
-  padding: 0.25rem;
-  border-radius: var(--shape-radius-round);
-  background: var(--surface-container-low);
-  box-shadow: var(--elevation-outline-subtle);
-}
-
-.quiver-icon-group .ui-button {
-  border-radius: var(--shape-radius-round);
-}
-
 .quiver-workspace {
+  width: 100%;
+  height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(18rem, 0.72fr) minmax(20rem, 0.88fr) minmax(
+  grid-template-columns: minmax(32rem, 1.12fr) minmax(20rem, 0.88fr) minmax(
       22rem,
       1fr
     );
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   gap: var(--spacing-gap-large);
-  align-items: start;
+  align-items: stretch;
+  margin: 0 auto;
 }
 
 .quiver-presets,
 .quiver-inputs,
 .quiver-preview-stack,
-.quiver-preview {
+.quiver-preview,
+.quiver-output {
   min-width: 0;
+  min-height: 0;
+}
+
+.quiver-presets {
+  grid-row: 1 / span 2;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.quiver-inputs {
+  grid-column: 2;
+  grid-row: 1;
+  overflow: auto;
 }
 
 .quiver-section-heading {
@@ -161,14 +137,26 @@ input {
   gap: var(--spacing-gap-medium);
 }
 
+.quiver-preset-grid {
+  min-height: 0;
+  overflow: auto;
+  align-content: start;
+}
+
+.quiver-preset-divider {
+  height: 1px;
+  margin-block: var(--spacing-gap-extra-small);
+  background: color-mix(in srgb, var(--outline-variant) 70%, transparent);
+}
+
 .quiver-preset {
   width: 100%;
-  min-height: 4.75rem;
+  min-height: 4.25rem;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: var(--spacing-gap-medium);
-  padding: var(--spacing-card-padding);
+  gap: var(--spacing-gap-small);
+  padding: var(--spacing-gap-medium);
   border: 1px solid transparent;
   border-radius: var(--shape-radius-small);
   background: var(--surface-container);
@@ -194,8 +182,8 @@ input {
 }
 
 .quiver-preset__icon {
-  width: 2.35rem;
-  height: 2.35rem;
+  width: 2.15rem;
+  height: 2.15rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -242,12 +230,19 @@ input {
 }
 
 .quiver-preview-stack {
+  grid-column: 3;
+  grid-row: 1 / span 2;
   display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   gap: var(--spacing-gap-large);
+  height: 100%;
 }
 
-.quiver-preview {
-  min-height: 16rem;
+.quiver-preview,
+.quiver-output {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .quiver-preview .ui-pill {
@@ -262,8 +257,8 @@ input {
 }
 
 .quiver-command-preview {
-  min-height: 8rem;
-  max-height: 32rem;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   margin: var(--spacing-gap-large) 0 0;
   padding: var(--spacing-card-padding);
@@ -284,25 +279,15 @@ input {
 }
 
 .quiver-command-preview--output {
-  min-height: 6rem;
-  max-height: 14rem;
-}
-
-.quiver-output {
-  min-height: 12rem;
+  max-height: none;
 }
 
 .quiver-output .quiver-section-heading {
   margin-bottom: var(--spacing-gap-medium);
 }
 
-.quiver-output__meta {
-  margin-top: var(--spacing-gap-medium);
-  justify-content: flex-end;
-}
-
 .quiver-empty-preview {
-  min-height: 8rem;
+  min-height: 0;
   display: grid;
   place-items: center;
   gap: var(--spacing-gap-medium);
@@ -317,25 +302,44 @@ input {
 }
 
 .quiver-empty-preview--output {
-  min-height: 6rem;
+  min-height: 0;
 }
 
 @media (max-width: 68rem) {
   .quiver-workspace {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
+    height: auto;
   }
 
-  .quiver-preview {
-    min-height: 14rem;
+  .quiver-presets,
+  .quiver-inputs,
+  .quiver-preview-stack {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .quiver-preview-stack {
+    grid-template-rows: repeat(2, minmax(16rem, auto));
+    height: auto;
+  }
+
+  .quiver-preview,
+  .quiver-output {
+    min-height: 16rem;
   }
 }
 
 @media (max-width: 48rem) {
-  .quiver-status {
-    justify-content: flex-start;
+  .quiver-main {
+    padding-inline: var(--spacing-safe-area-padding);
   }
 
   .quiver-command-row {
+    grid-template-columns: 1fr;
+  }
+
+  .quiver-preset-grid {
     grid-template-columns: 1fr;
   }
 

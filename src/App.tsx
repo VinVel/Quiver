@@ -1,17 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
-  Check,
   Download,
   FileAudio,
   FileVideo,
-  Globe,
   Link,
   Play,
-  Server,
-  Settings2,
   Terminal,
-  Video,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -19,7 +14,6 @@ import {
   Card,
   FeedbackMessage,
   Panel,
-  Pill,
   TextField,
   ToolbarField,
   Typography,
@@ -78,7 +72,6 @@ function App() {
     null,
   );
   const [commandOutput, setCommandOutput] = useState("");
-  const [activeSource, setActiveSource] = useState<PresetSource>("youTube");
   const [error, setError] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -119,9 +112,14 @@ function App() {
     [presets, selectedPresetId],
   );
 
-  const visiblePresets = useMemo(
-    () => presets.filter((preset) => preset.source === activeSource),
-    [activeSource, presets],
+  const youTubePresets = useMemo(
+    () => presets.filter((preset) => preset.source === "youTube"),
+    [presets],
+  );
+
+  const generalPresets = useMemo(
+    () => presets.filter((preset) => preset.source === "general"),
+    [presets],
   );
 
   const buildPreview = useCallback(
@@ -236,19 +234,18 @@ function App() {
     <div className="quiver-shell">
       <main className="quiver-main">
         <section className="quiver-command-row" aria-label="Download input">
-          <div className="quiver-url-panel">
-            <ToolbarField
-              icon={<Link aria-hidden="true" />}
-              placeholder="Paste a URL and prepare a download"
-              value={link}
-              onChange={(event) => setLink(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  void buildPreview();
-                }
-              }}
-            />
-          </div>
+          <ToolbarField
+            className="quiver-url-field"
+            icon={<Link aria-hidden="true" />}
+            placeholder="Paste a URL and prepare a download"
+            value={link}
+            onChange={(event) => setLink(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                void buildPreview();
+              }
+            }}
+          />
           <div className="quiver-command-actions">
             <Button
               variant="primary"
@@ -270,39 +267,7 @@ function App() {
           </div>
         </section>
 
-        <section className="quiver-toolbar" aria-label="Preset filters">
-          <div className="quiver-icon-group">
-            <Button
-              variant={activeSource === "youTube" ? "primary" : "ghost"}
-              iconOnly
-              aria-label="YouTube presets"
-              onClick={() => selectSource("youTube")}
-            >
-              <Video aria-hidden="true" />
-            </Button>
-            <Button
-              variant={activeSource === "general" ? "primary" : "ghost"}
-              iconOnly
-              aria-label="General presets"
-              onClick={() => selectSource("general")}
-            >
-              <Globe aria-hidden="true" />
-            </Button>
-          </div>
-
-          <div className="quiver-toolbar__spacer" />
-
-          <Pill tone="primary">
-            {selectedPreset?.requiresPotServer ? "POT server" : "No server"}
-          </Pill>
-          <Pill tone="secondary">
-            {selectedPreset?.usesCookies ? "Cookies" : "No cookies"}
-          </Pill>
-          <div className="quiver-status" aria-label="System status">
-            <Check aria-hidden="true" />
-            <Settings2 aria-hidden="true" />
-          </div>
-        </section>
+        <div className="quiver-divider" aria-hidden="true" />
 
         <div className="quiver-workspace">
           <Panel className="quiver-presets" aria-label="Preset selection">
@@ -314,28 +279,24 @@ function App() {
             </div>
 
             <div className="quiver-preset-grid">
-              {visiblePresets.map((preset) => (
-                <button
-                  className={
-                    preset.id === selectedPresetId
-                      ? "quiver-preset quiver-preset--active"
-                      : "quiver-preset"
-                  }
+              {youTubePresets.map((preset) => (
+                <PresetButton
                   key={preset.id}
-                  type="button"
-                  onClick={() => setSelectedPresetId(preset.id)}
-                >
-                  <span className="quiver-preset__icon" aria-hidden="true">
-                    {preset.media === "video" ? <FileVideo /> : <FileAudio />}
-                  </span>
-                  <span className="quiver-preset__body">
-                    <span className="quiver-preset__label">{preset.label}</span>
-                    <span className="quiver-preset__meta">
-                      {preset.source === "youTube" ? "YouTube" : "General"} ·{" "}
-                      {preset.media}
-                    </span>
-                  </span>
-                </button>
+                  preset={preset}
+                  isSelected={preset.id === selectedPresetId}
+                  onSelectPreset={setSelectedPresetId}
+                />
+              ))}
+              {youTubePresets.length > 0 && generalPresets.length > 0 ? (
+                <div className="quiver-preset-divider" aria-hidden="true" />
+              ) : null}
+              {generalPresets.map((preset) => (
+                <PresetButton
+                  key={preset.id}
+                  preset={preset}
+                  isSelected={preset.id === selectedPresetId}
+                  onSelectPreset={setSelectedPresetId}
+                />
               ))}
             </div>
           </Panel>
@@ -378,24 +339,15 @@ function App() {
 
           <div className="quiver-preview-stack">
             <Card className="quiver-preview">
-              <div className="quiver-section-heading">
-                <Typography variant="h2">Command Preview</Typography>
-                <Typography variant="bodySmall" muted>
+                <div className="quiver-section-heading">
+                  <Typography variant="h2">Command Preview</Typography>
+                  <Typography variant="bodySmall" muted>
                   Review the generated yt-dlp command before running it.
                 </Typography>
               </div>
 
               {preview ? (
                 <>
-                  <div className="quiver-preview__meta">
-                    <Pill tone="primary">{preview.preset.label}</Pill>
-                    {preview.requiresPotServer ? (
-                      <Pill tone="secondary">
-                        <Server aria-hidden="true" />
-                        POT server
-                      </Pill>
-                    ) : null}
-                  </div>
                   <pre className="quiver-command-preview">
                     <code>{commandText}</code>
                   </pre>
@@ -441,33 +393,42 @@ function App() {
                 </div>
               )}
 
-              {downloadResult ? (
-                <div className="quiver-output__meta">
-                  <Pill tone={downloadResult.success ? "primary" : "secondary"}>
-                    {downloadResult.success ? "Success" : "Failed"}
-                  </Pill>
-                  <Pill tone="secondary">
-                    Exit {downloadResult.exitCode ?? "unknown"}
-                  </Pill>
-                </div>
-              ) : null}
             </Card>
           </div>
         </div>
       </main>
     </div>
   );
+}
 
-  function selectSource(source: PresetSource) {
-    setActiveSource(source);
-    setDownloadResult(null);
-    setCommandOutput("");
+type PresetButtonProps = {
+  preset: DownloadPreset;
+  isSelected: boolean;
+  onSelectPreset: (presetId: string) => void;
+};
 
-    const nextPreset = presets.find((preset) => preset.source === source);
-    if (nextPreset) {
-      setSelectedPresetId(nextPreset.id);
-    }
-  }
+function PresetButton({
+  preset,
+  isSelected,
+  onSelectPreset,
+}: PresetButtonProps) {
+  return (
+    <button
+      className={
+        isSelected ? "quiver-preset quiver-preset--active" : "quiver-preset"
+      }
+      type="button"
+      onClick={() => onSelectPreset(preset.id)}
+    >
+      <span className="quiver-preset__icon" aria-hidden="true">
+        {preset.media === "video" ? <FileVideo /> : <FileAudio />}
+      </span>
+      <span className="quiver-preset__body">
+        <span className="quiver-preset__label">{preset.label}</span>
+        <span className="quiver-preset__meta">{preset.media}</span>
+      </span>
+    </button>
+  );
 }
 
 function createRunId(): string {
