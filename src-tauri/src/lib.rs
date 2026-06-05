@@ -5,15 +5,34 @@ mod subtitle_pipeline;
 mod yt_dlp;
 
 use presets::{DownloadPreset, DownloadPresetInput, PresetCommandPreview, PresetId};
-use serde::Serialize;
-use std::{path::PathBuf, sync::Mutex};
+use serde::{Deserialize, Serialize};
+use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{Emitter, Manager};
 use yt_dlp::{YtDlpCommandOutput, YtDlpOutputStream, YtDlpRunner};
 
+const THEME_SETTINGS_FILE_NAME: &str = "theme-settings.json";
+const DEFAULT_THEME_MODE: &str = "system";
+const DEFAULT_THEME_PRESET: &str = "crystal";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThemePreferences {
+    mode: String,
+    preset: String,
+}
+
+impl Default for ThemePreferences {
+    fn default() -> Self {
+        Self {
+            mode: DEFAULT_THEME_MODE.to_string(),
+            preset: DEFAULT_THEME_PRESET.to_string(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct ThemeSettings {
-    mode: Mutex<String>,
-    preset: Mutex<String>,
+    preferences: Mutex<ThemePreferences>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -32,49 +51,50 @@ fn greet(name: &str) -> String {
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "Tauri command state is extracted by value."
+    reason = "Tauri command state and app handles are extracted by value."
 )]
-fn get_theme_mode(settings: tauri::State<'_, ThemeSettings>) -> String {
-    settings.mode.lock().map_or_else(
-        |_| "system".to_string(),
-        |mode| {
-            if mode.is_empty() {
-                "system".to_string()
-            } else {
-                mode.clone()
-            }
-        },
-    )
+fn get_theme_mode(app: tauri::AppHandle, settings: tauri::State<'_, ThemeSettings>) -> String {
+    let preferences = load_theme_preferences(&app, &settings);
+    match preferences.mode.as_str() {
+        "light" | "dark" | "system" => preferences.mode,
+        _ => DEFAULT_THEME_MODE.to_string(),
+    }
 }
 
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "Tauri command state is extracted by value."
+    reason = "Tauri command state and app handles are extracted by value."
 )]
-fn set_theme_mode(mode: String, settings: tauri::State<'_, ThemeSettings>) -> String {
+fn set_theme_mode(
+    app: tauri::AppHandle,
+    mode: String,
+    settings: tauri::State<'_, ThemeSettings>,
+) -> Result<String, String> {
     let next_mode = match mode.as_str() {
         "light" | "dark" | "system" => mode,
-        _ => "system".to_string(),
+        _ => DEFAULT_THEME_MODE.to_string(),
     };
+    let mut preferences = load_theme_preferences(&app, &settings);
+    preferences.mode.clone_from(&next_mode);
 
-    if let Ok(mut saved_mode) = settings.mode.lock() {
-        saved_mode.clone_from(&next_mode);
-    }
+    save_theme_preferences(&app, &settings, &preferences)?;
 
-    next_mode
+    Ok(next_mode)
 }
 
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "Tauri command arguments are extracted by value."
+    reason = "Tauri command arguments, state, and app handles are extracted by value."
 )]
 fn get_theme_preset(
+    app: tauri::AppHandle,
     supported_presets: Vec<String>,
     default_preset: String,
     settings: tauri::State<'_, ThemeSettings>,
 ) -> String {
+    let preferences = load_theme_preferences(&app, &settings);
     let fallback = if supported_presets
         .iter()
         .any(|preset| preset == &default_preset)
@@ -84,23 +104,17 @@ fn get_theme_preset(
         supported_presets
             .first()
             .cloned()
-            .unwrap_or_else(|| "crystal".to_string())
+            .unwrap_or_else(|| DEFAULT_THEME_PRESET.to_string())
     };
 
-    settings
-        .preset
-        .lock()
-        .map(|preset| {
-            if supported_presets
-                .iter()
-                .any(|supported| supported == &*preset)
-            {
-                preset.clone()
-            } else {
-                fallback.clone()
-            }
-        })
-        .unwrap_or(fallback)
+    if supported_presets
+        .iter()
+        .any(|supported| supported == &preferences.preset)
+    {
+        preferences.preset
+    } else {
+        fallback
+    }
 }
 
 #[tauri::command]
@@ -109,11 +123,12 @@ fn get_theme_preset(
     reason = "Tauri command arguments are extracted by value."
 )]
 fn set_theme_preset(
+    app: tauri::AppHandle,
     preset: String,
     supported_presets: Vec<String>,
     default_preset: String,
     settings: tauri::State<'_, ThemeSettings>,
-) -> String {
+) -> Result<String, String> {
     let fallback = if supported_presets
         .iter()
         .any(|supported| supported == &default_preset)
@@ -123,7 +138,7 @@ fn set_theme_preset(
         supported_presets
             .first()
             .cloned()
-            .unwrap_or_else(|| "crystal".to_string())
+            .unwrap_or_else(|| DEFAULT_THEME_PRESET.to_string())
     };
     let next_preset = if supported_presets
         .iter()
@@ -133,12 +148,17 @@ fn set_theme_preset(
     } else {
         fallback
     };
+    let mut preferences = load_theme_preferences(&app, &settings);
+    preferences.preset.clone_from(&next_preset);
 
-    if let Ok(mut saved_preset) = settings.preset.lock() {
-        saved_preset.clone_from(&next_preset);
-    }
+    save_theme_preferences(&app, &settings, &preferences)?;
 
-    next_preset
+    Ok(next_preset)
+}
+
+#[tauri::command]
+fn get_license_html() -> String {
+    include_str!("../license.html").to_string()
 }
 
 #[tauri::command]
@@ -213,6 +233,65 @@ fn yt_dlp_plugin_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     yt_dlp::candidate_plugin_dirs(resource_dir.as_deref())
 }
 
+fn theme_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let settings_directory = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("failed to resolve app settings directory: {error}"))?;
+    fs::create_dir_all(&settings_directory).map_err(|error| {
+        format!(
+            "failed to create app settings directory at {}: {error}",
+            settings_directory.display()
+        )
+    })?;
+
+    Ok(settings_directory.join(THEME_SETTINGS_FILE_NAME))
+}
+
+fn load_theme_preferences(
+    app: &tauri::AppHandle,
+    settings: &tauri::State<'_, ThemeSettings>,
+) -> ThemePreferences {
+    let preferences = theme_settings_path(app)
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|settings_json| serde_json::from_str::<ThemePreferences>(&settings_json).ok())
+        .unwrap_or_else(|| {
+            settings.preferences.lock().map_or_else(
+                |_| ThemePreferences::default(),
+                |preferences| preferences.clone(),
+            )
+        });
+
+    if let Ok(mut saved_preferences) = settings.preferences.lock() {
+        saved_preferences.clone_from(&preferences);
+    }
+
+    preferences
+}
+
+fn save_theme_preferences(
+    app: &tauri::AppHandle,
+    settings: &tauri::State<'_, ThemeSettings>,
+    preferences: &ThemePreferences,
+) -> Result<(), String> {
+    let settings_path = theme_settings_path(app)?;
+    let settings_json = serde_json::to_string_pretty(&preferences)
+        .map_err(|error| format!("failed to serialize theme settings: {error}"))?;
+    fs::write(&settings_path, settings_json).map_err(|error| {
+        format!(
+            "failed to write theme settings to {}: {error}",
+            settings_path.display()
+        )
+    })?;
+
+    if let Ok(mut saved_preferences) = settings.preferences.lock() {
+        saved_preferences.clone_from(preferences);
+    }
+
+    Ok(())
+}
+
 #[cfg(desktop)]
 fn focus_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -257,6 +336,7 @@ pub fn run() {
             set_theme_mode,
             get_theme_preset,
             set_theme_preset,
+            get_license_html,
             yt_dlp_version,
             run_yt_dlp,
             download_presets,

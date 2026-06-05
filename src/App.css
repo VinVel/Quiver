@@ -108,6 +108,7 @@ input {
 
 .quiver-presets,
 .quiver-inputs,
+.quiver-settings,
 .quiver-preview-stack,
 .quiver-preview,
 .quiver-output {
@@ -125,6 +126,14 @@ input {
   grid-column: 2;
   grid-row: 1;
   overflow: auto;
+}
+
+.quiver-settings {
+  grid-column: 2;
+  grid-row: 2;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto minmax(0, 0.8fr);
+  overflow: hidden;
 }
 
 .quiver-section-heading {
@@ -219,6 +228,105 @@ input {
   .quiver-advanced-subtitles__tooltip {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+
+.quiver-settings-section {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: var(--spacing-gap-medium);
+}
+
+.quiver-settings-section .quiver-section-heading {
+  margin-bottom: 0;
+}
+
+.quiver-settings-divider {
+  height: 1px;
+  margin-block: var(--spacing-gap-large);
+  background: color-mix(in srgb, var(--outline-variant) 70%, transparent);
+}
+
+.quiver-theme-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--spacing-gap-small);
+}
+
+.quiver-theme-option {
+  min-width: 0;
+  min-height: 2.5rem;
+  display: grid;
+  grid-template-columns: auto;
+  justify-items: center;
+  align-items: center;
+  gap: var(--spacing-gap-small);
+  border: none;
+  border-radius: var(--shape-radius-small);
+  padding: var(--spacing-control-padding-block)
+    var(--spacing-control-padding-inline);
+  background: color-mix(
+    in srgb,
+    var(--quiver-theme-swatch-container) 34%,
+    var(--surface-container-low)
+  );
+  color: var(--on-surface);
+  box-shadow: var(--elevation-outline-subtle);
+  cursor: pointer;
+}
+
+.quiver-theme-option:hover {
+  background: color-mix(
+    in srgb,
+    var(--quiver-theme-swatch-container) 50%,
+    var(--surface-container-low)
+  );
+}
+
+.quiver-theme-option--active {
+  box-shadow:
+    inset 0 0 0 2px var(--primary),
+    var(--elevation-surface-raised);
+}
+
+.quiver-theme-option__swatch {
+  width: 1rem;
+  height: 1rem;
+  border-radius: var(--shape-radius-round);
+  background: var(--quiver-theme-swatch);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--shadow) 16%, transparent);
+}
+
+.quiver-theme-option__label {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  font-size: var(--typography-label-medium-size);
+  font-weight: var(--typography-font-weight-medium);
+}
+
+.quiver-theme-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-gap-small);
+  color: var(--on-surface-variant);
+}
+
+.quiver-theme-mode svg {
+  width: var(--sizing-icon-small);
+  height: var(--sizing-icon-small);
+}
+
+.quiver-about-section {
+  align-content: space-between;
+}
+
+.quiver-license-button {
+  justify-self: start;
 }
 
 .quiver-preset {
@@ -381,6 +489,69 @@ input {
   min-height: 0;
 }
 
+.quiver-license-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: var(--spacing-safe-area-padding);
+}
+
+.quiver-license-scrim {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: color-mix(in srgb, var(--scrim) 58%, transparent);
+  -webkit-backdrop-filter: var(--effects-overlay-backdrop-blur);
+  backdrop-filter: var(--effects-overlay-backdrop-blur);
+  cursor: pointer;
+}
+
+.quiver-license-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(88rem, calc(100vw - 3rem));
+  height: min(52rem, calc(100vh - 3rem));
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border-radius: var(--shape-radius-medium);
+  background: var(--surface-container-lowest);
+  box-shadow: var(--elevation-panel-raised), var(--elevation-outline-subtle);
+  overflow: hidden;
+}
+
+.quiver-license-dialog__header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--spacing-gap-large);
+  padding: var(--spacing-panel-padding);
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--outline-variant) 70%, transparent);
+}
+
+.quiver-license-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--surface-container-lowest);
+}
+
+.quiver-license-loading {
+  display: grid;
+  place-items: center;
+  gap: var(--spacing-gap-medium);
+  color: var(--on-surface-variant);
+}
+
+.quiver-license-loading svg {
+  width: 2.5rem;
+  height: 2.5rem;
+  color: var(--primary);
+}
+
 @media (max-width: 68rem) {
   body {
     height: auto;
@@ -404,9 +575,15 @@ input {
 
   .quiver-presets,
   .quiver-inputs,
+  .quiver-settings,
   .quiver-preview-stack {
     grid-column: auto;
     grid-row: auto;
+  }
+
+  .quiver-settings {
+    grid-template-rows: none;
+    height: auto;
   }
 
   .quiver-preview-stack {

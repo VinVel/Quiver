@@ -2,14 +2,26 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   Download,
+  FileText,
   FileAudio,
   FileVideo,
   Info,
   Link,
+  Moon,
+  Palette,
   Play,
+  SunMedium,
   Terminal,
+  X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   Button,
   Card,
@@ -20,6 +32,12 @@ import {
   Toggle,
   Typography,
 } from "./components/ui";
+import { useTheme } from "./context/ThemeContext";
+import {
+  themePalettes,
+  themePresetDetails,
+  type ThemePresetName,
+} from "./themes/colorpalette";
 import "./App.css";
 
 type PresetSource = "youTube" | "general";
@@ -64,8 +82,10 @@ const defaultDirectory = "~/Downloads";
 const defaultCookiesPath = "~/Downloads/cookies.txt";
 const ytDlpCommandFailedMessage =
   "Something went wrong. The download may still have succeeded, so check the logs.";
+const themePresetOptions = Object.keys(themePresetDetails) as ThemePresetName[];
 
 function App() {
+  const { theme, setTheme, themePreset, setThemePreset } = useTheme();
   const [presets, setPresets] = useState<DownloadPreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string>("");
   const [link, setLink] = useState("");
@@ -79,6 +99,9 @@ function App() {
   const [isAdvancedSubtitlePipelineEnabled, setIsAdvancedSubtitlePipelineEnabled] =
     useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [licenseHtml, setLicenseHtml] = useState<string | null>(null);
+  const [isLicenseOpen, setIsLicenseOpen] = useState(false);
+  const [isLicenseLoading, setIsLicenseLoading] = useState(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const hasPreparedPreviewRef = useRef(false);
@@ -229,6 +252,40 @@ function App() {
     }
   }
 
+  async function handleThemePresetChange(nextPreset: ThemePresetName) {
+    try {
+      await setThemePreset(nextPreset);
+    } catch (themeError) {
+      setError(errorToMessage(themeError));
+    }
+  }
+
+  async function handleThemeModeToggle() {
+    try {
+      await setTheme(theme === "dark" ? "light" : "dark");
+    } catch (themeError) {
+      setError(errorToMessage(themeError));
+    }
+  }
+
+  async function openLicenses() {
+    setIsLicenseOpen(true);
+
+    if (licenseHtml) {
+      return;
+    }
+
+    setIsLicenseLoading(true);
+    try {
+      setLicenseHtml(await invoke<string>("get_license_html"));
+    } catch (licenseError) {
+      setIsLicenseOpen(false);
+      setError(errorToMessage(licenseError));
+    } finally {
+      setIsLicenseLoading(false);
+    }
+  }
+
   const commandText = preview ? ["yt-dlp", ...preview.args].join(" ") : "";
   const completedOutput = downloadResult
     ? [downloadResult.stdout, downloadResult.stderr].filter(Boolean).join("\n")
@@ -240,6 +297,7 @@ function App() {
     selectedPreset?.source === "youTube";
   const shouldRunAdvancedSubtitlePipeline =
     isAdvancedSubtitlePipelineAvailable && isAdvancedSubtitlePipelineEnabled;
+  const licenseDocument = licenseHtml ? buildLicenseDocument(licenseHtml) : "";
 
   return (
     <div className="quiver-shell">
@@ -375,6 +433,80 @@ function App() {
             ) : null}
           </Panel>
 
+          <Panel className="quiver-settings" aria-label="Appearance and about">
+            <section className="quiver-settings-section">
+              <div className="quiver-section-heading">
+                <Typography variant="h2">Appearance</Typography>
+                <Typography variant="bodySmall" muted>
+                  Choose a color scheme and display mode.
+                </Typography>
+              </div>
+
+              <div className="quiver-theme-options" aria-label="Color schemes">
+                {themePresetOptions.map((presetName) => {
+                  const colors = themePalettes[presetName].light;
+                  const swatchStyle = {
+                    "--quiver-theme-swatch": colors.primary,
+                    "--quiver-theme-swatch-container": colors.primaryContainer,
+                  } as CSSProperties;
+
+                  return (
+                    <button
+                      key={presetName}
+                      aria-pressed={themePreset === presetName}
+                      className={
+                        themePreset === presetName
+                          ? "quiver-theme-option quiver-theme-option--active"
+                          : "quiver-theme-option"
+                      }
+                      style={swatchStyle}
+                      type="button"
+                      onClick={() => void handleThemePresetChange(presetName)}
+                    >
+                      <span
+                        className="quiver-theme-option__swatch"
+                        aria-hidden="true"
+                      />
+                      <span className="quiver-theme-option__label">
+                        {themePresetDetails[presetName].label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="quiver-theme-mode">
+                <SunMedium aria-hidden="true" />
+                <Toggle
+                  checked={theme === "dark"}
+                  label="Dark mode"
+                  onClick={() => void handleThemeModeToggle()}
+                />
+                <Moon aria-hidden="true" />
+              </div>
+            </section>
+
+            <div className="quiver-settings-divider" aria-hidden="true" />
+
+            <section className="quiver-settings-section quiver-about-section">
+              <div className="quiver-section-heading">
+                <Typography variant="h2">About</Typography>
+                <Typography variant="bodySmall" muted>
+                  Quiver includes third-party open-source components.
+                </Typography>
+              </div>
+
+              <Button
+                className="quiver-license-button"
+                variant="secondary"
+                onClick={() => void openLicenses()}
+              >
+                <FileText aria-hidden="true" />
+                Licenses
+              </Button>
+            </section>
+          </Panel>
+
           <div className="quiver-preview-stack">
             <Card className="quiver-preview">
                 <div className="quiver-section-heading">
@@ -435,6 +567,53 @@ function App() {
           </div>
         </div>
       </main>
+
+      {isLicenseOpen ? (
+        <div
+          className="quiver-license-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Third-party licenses"
+        >
+          <button
+            className="quiver-license-scrim"
+            type="button"
+            aria-label="Close licenses"
+            onClick={() => setIsLicenseOpen(false)}
+          />
+          <section className="quiver-license-dialog">
+            <header className="quiver-license-dialog__header">
+              <div>
+                <Typography variant="h2">Third-party Licenses</Typography>
+              </div>
+              <Button
+                variant="icon"
+                iconOnly
+                aria-label="Close licenses"
+                onClick={() => setIsLicenseOpen(false)}
+              >
+                <X aria-hidden="true" />
+              </Button>
+            </header>
+
+            {isLicenseLoading ? (
+              <div className="quiver-license-loading">
+                <Palette aria-hidden="true" />
+                <Typography variant="bodySmall" muted>
+                  Loading licenses...
+                </Typography>
+              </div>
+            ) : (
+              <iframe
+                className="quiver-license-frame"
+                title="Third-party licenses"
+                srcDoc={licenseDocument}
+                sandbox=""
+              />
+            )}
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -467,6 +646,65 @@ function PresetButton({
       </span>
     </button>
   );
+}
+
+function buildLicenseDocument(html: string): string {
+  const themeStyles = `
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        padding: 1.25rem;
+        background: transparent;
+      }
+
+      .container {
+        max-width: none;
+      }
+
+      .intro {
+        padding: 1rem;
+        border-radius: 8px;
+        background: rgba(120, 120, 120, 0.1);
+      }
+
+      a {
+        text-underline-offset: 0.18em;
+      }
+
+      .licenses-overview {
+        display: grid;
+        gap: 0.45rem;
+        padding-left: 1.25rem;
+      }
+
+      .licenses-list {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .license {
+        padding: 1rem;
+        border-radius: 8px;
+        background: rgba(120, 120, 120, 0.1);
+      }
+
+      .license-text {
+        max-height: 18rem;
+        padding: 1rem;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.08);
+      }
+    </style>
+  `;
+
+  return html.includes("</head>")
+    ? html.replace("</head>", `${themeStyles}</head>`)
+    : `${themeStyles}${html}`;
 }
 
 function createRunId(): string {
