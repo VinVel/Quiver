@@ -62,6 +62,8 @@ type DownloadPresetInput = {
 
 const defaultDirectory = "~/Downloads";
 const defaultCookiesPath = "~/Downloads/cookies.txt";
+const ytDlpCommandFailedMessage =
+  "Something went wrong. The download may still have succeeded, so check the logs.";
 
 function App() {
   const [presets, setPresets] = useState<DownloadPreset[]>([]);
@@ -217,7 +219,7 @@ function App() {
       });
       setDownloadResult(result);
       if (!result.success) {
-        setError(result.stderr || "yt-dlp exited with an error.");
+        setError(ytDlpCommandFailedMessage);
       }
     } catch (downloadError) {
       setError(errorToMessage(downloadError));
