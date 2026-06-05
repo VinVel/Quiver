@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Download,
   FileText,
@@ -204,6 +205,38 @@ function App() {
 
     commandOutputRef.current.scrollTop = commandOutputRef.current.scrollHeight;
   }, [commandOutput, isDownloading]);
+
+  useEffect(() => {
+    function handleLicenseLinkMessage(event: MessageEvent) {
+      if (
+        typeof event.data !== "object" ||
+        event.data === null ||
+        event.data.type !== "quiver-open-license-link" ||
+        typeof event.data.href !== "string"
+      ) {
+        return;
+      }
+
+      try {
+        const licenseUrl = new URL(event.data.href);
+        if (licenseUrl.protocol !== "http:" && licenseUrl.protocol !== "https:") {
+          return;
+        }
+
+        void openUrl(licenseUrl).catch((openError: unknown) => {
+          setError(errorToMessage(openError));
+        });
+      } catch {
+        // Ignore malformed URLs emitted by the isolated license frame.
+      }
+    }
+
+    window.addEventListener("message", handleLicenseLinkMessage);
+
+    return () => {
+      window.removeEventListener("message", handleLicenseLinkMessage);
+    };
+  }, []);
 
   async function runDownload() {
     if (!preview) {
@@ -608,7 +641,7 @@ function App() {
                 className="quiver-license-frame"
                 title="Third-party licenses"
                 srcDoc={licenseDocument}
-                sandbox=""
+                sandbox="allow-scripts"
               />
             )}
           </section>
@@ -674,6 +707,7 @@ function buildLicenseDocument(html: string): string {
 
       a {
         text-underline-offset: 0.18em;
+        cursor: pointer;
       }
 
       .licenses-overview {
@@ -701,10 +735,46 @@ function buildLicenseDocument(html: string): string {
       }
     </style>
   `;
+  const externalLinkScript = `
+    <script>
+      document.addEventListener("click", (event) => {
+        const link = event.target.closest("a[href]");
+        if (!link) {
+          return;
+        }
 
-  return html.includes("</head>")
+        if (link.closest(".licenses-overview")) {
+          event.preventDefault();
+          return;
+        }
+
+        const href = link.getAttribute("href") || "";
+        if (href.startsWith("#")) {
+          event.preventDefault();
+          return;
+        }
+
+        const url = new URL(href, document.baseURI);
+        if (url.protocol !== "http:" && url.protocol !== "https:") {
+          return;
+        }
+
+        event.preventDefault();
+        window.parent.postMessage(
+          { type: "quiver-open-license-link", href: url.href },
+          "*"
+        );
+      });
+    </script>
+  `;
+
+  const styledHtml = html.includes("</head>")
     ? html.replace("</head>", `${themeStyles}</head>`)
     : `${themeStyles}${html}`;
+
+  return styledHtml.includes("</body>")
+    ? styledHtml.replace("</body>", `${externalLinkScript}</body>`)
+    : `${styledHtml}${externalLinkScript}`;
 }
 
 function createRunId(): string {
