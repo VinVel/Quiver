@@ -32,7 +32,7 @@ The default workflow is:
 4. Prepare the command.
 5. Download.
 
-No `Python` setup, no separate `yt-dlp` install, no manual POT provider setup, and no command-line spelunking for routine downloads.
+No `Python` setup, no separate `yt-dlp` install, no manual POT provider setup, and no command-line guessing for routine downloads.
 
 ## Install
 
@@ -102,13 +102,7 @@ Install frontend dependencies:
 bun install
 ```
 
-Run the frontend dev server:
-
-```sh
-bun run dev
-```
-
-Run the full Tauri app:
+Run the Tauri app in developement mode:
 
 ```sh
 bun tauri dev
@@ -123,7 +117,7 @@ bun run build
 Build the desktop app:
 
 ```sh
-bun tauri build
+bun tauri build --no-sign
 ```
 
 For Rust changes, also run:
@@ -135,6 +129,44 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features
 ```
 
 During local development, `QUIVER_YT_DLP_BINARY` can point Quiver at a custom `yt-dlp` binary. Release builds are intended to use the bundled sidecar.
+
+## FAQ
+
+### What does the `--cookies` flag do and how do I obtain the file?
+
+I would advise you read through the yt-dlp wiki, especially [this section](https://github.com/yt-dlp/yt-dlp-wiki/blob/master/FAQ.md#how-do-i-pass-cookies-to-yt-dlp).
+
+### Why do you need to download ffmpeg seperately on macOS?
+
+It is practically impossible to download verifiable staatic ffmpeg executables for macOS. While there is [this](https://evermeet.cx/ffmpeg/), the link to get the signatures are broken and they don't provide builds for macOS running on arm devices.
+
+### Can I edit the Command Preview to customize it how I want?
+
+Currenly not. You can use the Input Fields to specify save directory and cookies file. Trying to support custom commands mixed in with the preview is a UX disaster, error prone when it comes to parsing on different OSs and generally a headache.
+
+### Why is the installer file so big?
+
+Quiver makes use of 6 (4 on macOS) individual binaries that are packaged alongside it to provide the capability it needs. They are built/fetched during build time, that way it is always verifiable from where a binary comes from.
+
+### How to verify your builds?
+
+All builds are built with github actions for reproducible builds. Furthermore on Linux and Windows you can check the signage signatures. 
+
+For Linux, you can download my public gpg key from [https://keys.openpgp.org/](https://keys.openpgp.org/search?q=dev%40velcore.net). 
+
+For Windows, given that I self-signed the application, there is not really that much value in confirming my signature. If you still want to, you can download the public certificate called certificate.cer.
+
+Then you'd first have to install certificate into your Trusted Root Certification Authorities ([Please understand the implications of this!](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/trusted-root-certification-authorities-certificate-store))
+
+```pwsh
+Import-Certificate -FilePath ".\certificate.cer" -CertStoreLocation Cert:\LocalMachine\Root   
+```
+
+And then you can check for the correct signature, by typing this command, the Status should display valid:
+
+```pwsh
+Get-AuthenticodeSignature -FilePath .\Quiver_x.y.z-setup.exe
+```
 
 ## License
 
@@ -156,3 +188,12 @@ During local development, `QUIVER_YT_DLP_BINARY` can point Quiver at a custom `y
     You should have received a copy of the GNU General Public License
     along with this program. If not, see <https://www.gnu.org/licenses/>.
 ```
+
+Quiver makes use of 6 (on macOS 4) individual sidecars each with their own license (I linked the repo from where i get either the source code in the case of building them from source, or where I got the binaries from the release pipelines):
+ - [bgutil-ytdlp-pot-provider-rs](https://github.com/VinVel/bgutil-ytdlp-pot-provider-rs):  GPL-3.0 license
+ - [Deno](https://github.com/denoland/deno/): MIT License
+ - [ffmpeg and ffprobe](https://github.com/yt-dlp/FFmpeg-Builds): The Build Scripts are MIT License, but the compiled binary is made up of LGPL 2.1+ and GPL 3.0 code
+ - [yt-dlp](https://github.com/yt-dlp/yt-dlp): Unlicense license
+ - [YTSubConverter](https://github.com/arcusmaximus/YTSubConverter): MIT license
+
+As for the Rust Crates and npm Packages used, they can be seen in src-tauri/Cargo.toml and package.json. For Rust I also provide a deeper Licenses Analysis inside the App with a 'Licenses' Button or alternatively the text for that can be looked up in src-tauri/license.html.
