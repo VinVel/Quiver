@@ -44,6 +44,10 @@ fn main() {
     prepare_pot_provider_plugin_resource();
     stop_running_copied_sidecars();
 
+    #[allow(
+        unused_mut,
+        reason = "It needs to be mutable on windows, therefore it is now everywhere for consistency."
+    )]
     let mut attributes = tauri_build::Attributes::new();
     #[cfg(all(target_os = "windows", target_env = "msvc"))]
     {
