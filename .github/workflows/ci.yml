@@ -8,18 +8,8 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  CI: true
-  CARGO_INCREMENTAL: 0
-
 jobs:
   build:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -27,66 +17,55 @@ jobs:
         include:
           - name: Windows x64
             runner: windows-latest
-            kind: desktop
             target: x86_64-pc-windows-msvc
-            artifact: ci-build-windows-x64
-            rust_targets: x86_64-pc-windows-msvc
-            install_linux_deps: false
-            install_dotnet: false
 
           - name: Windows arm64
             runner: windows-11-arm
-            kind: desktop
             target: aarch64-pc-windows-msvc
-            artifact: ci-build-windows-arm64
-            rust_targets: aarch64-pc-windows-msvc
-            install_linux_deps: false
-            install_dotnet: false
 
           - name: macOS Intel
             runner: macos-26-intel
-            kind: desktop
             target: x86_64-apple-darwin
-            artifact: ci-build-macos-intel
-            rust_targets: x86_64-apple-darwin
-            install_linux_deps: false
-            install_dotnet: true
 
           - name: macOS arm64
             runner: macos-26
-            kind: desktop
             target: aarch64-apple-darwin
-            artifact: ci-build-macos-arm64
-            rust_targets: aarch64-apple-darwin
-            install_linux_deps: false
-            install_dotnet: true
 
           - name: Linux x64 GNU
             runner: ubuntu-24.04
-            kind: linux
             target: x86_64-unknown-linux-gnu
-            artifact: ci-build-linux-x64-gnu
-            rust_targets: x86_64-unknown-linux-gnu
-            install_linux_deps: true
-            install_dotnet: true
 
           - name: Linux arm64 GNU
             runner: ubuntu-24.04-arm
-            kind: linux
             target: aarch64-unknown-linux-gnu
-            artifact: ci-build-linux-arm64-gnu
-            rust_targets: aarch64-unknown-linux-gnu
-            install_linux_deps: true
-            install_dotnet: true
 
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: Install Linux native system dependencies
-        if: ${{ matrix.install_linux_deps }}
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Rust toolchain and targets
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install .NET SDK
+        if: ${{ matrix.name != 'Windows x64' || matrix.name != 'Windows arm64' }}
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: install dependencies (Linux only)
+        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux aarch64 GNU' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -100,33 +79,16 @@ jobs:
             libxdo-dev \
             pkg-config \
             wget \
-            xdg-utils
+            xdg-utils \ 
+            librsvg2-dev \
+            patchelf \
 
-      - name: Install Rust toolchain and targets
-        uses: dtolnay/rust-toolchain@master
+      - name: install frontend dependencies and build it
+        run: bun install --frozen-lockfile && bun run build
+
+      - name: Build Debug Bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          toolchain: stable
-          targets: ${{ matrix.rust_targets }}
-
-      - name: Install .NET SDK
-        if: ${{ matrix.install_dotnet }}
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: 8.0.x
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install JavaScript dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build Tauri desktop target
-        shell: bash
-        run: |
-          bun tauri build \
-            --debug \
-            --target "${{ matrix.target }}" \
-            --no-bundle \
-            --verbose
+          args: --target ${{ matrix.target }} --debug --verbose --no-bundle --no-sign -- -vv
