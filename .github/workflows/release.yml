@@ -1,0 +1,139 @@
+name: 'release'
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: Windows x64
+            runner: windows-latest
+            kind: desktop
+            target: x86_64-pc-windows-msvc
+
+          - name: Windows arm64
+            runner: windows-11-arm
+            kind: desktop
+            target: aarch64-pc-windows-msvc
+
+          - name: macOS Intel
+            runner: macos-26-intel
+            kind: desktop
+            target: x86_64-apple-darwin
+
+          - name: macOS arm64
+            runner: macos-26
+            kind: desktop
+            target: aarch64-apple-darwin
+
+          - name: Linux x64 GNU
+            runner: ubuntu-24.04
+            kind: linux
+            target: x86_64-unknown-linux-gnu
+
+          - name: Linux arm64 GNU
+            runner: ubuntu-24.04-arm
+            kind: linux
+            target: aarch64-unknown-linux-gnu
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Rust toolchain and targets
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install .NET SDK
+        if: ${{ matrix.name != 'Windows x64' || matrix.name != 'Windows arm64' }}
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: install dependencies (Linux only)
+        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux aarch64 GNU' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+          build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            pkg-config \
+            wget \
+            xdg-utils \ 
+            librsvg2-dev \
+            patchelf \
+            rpm \
+            gnupg
+
+      - name: install frontend dependencies and build it
+        run: bun install --frozen-lockfile && bun run build
+
+      - name: import windows certificate
+        if: ${{ matrix.name == 'Windows x64' || matrix.name == 'Windows arm64' }}
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          New-Item -ItemType directory -Path certificate
+          Set-Content -Path certificate/tempCert.txt -Value $env:WINDOWS_CERTIFICATE
+          certutil -decode certificate/tempCert.txt certificate/certificate.pfx
+          Remove-Item -path certificate -include tempCert.txt
+          Import-PfxCertificate -FilePath certificate/certificate.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText)
+            
+      - name: Import GPG Key
+        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux aarch64 GNU' }}
+        run: |
+         echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch --no-tty
+         echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+         echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
+         gpg-connect-agent reloadagent /bye || true
+
+      - name: Build Release Bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # RPM Signing
+          TAURI_SIGNING_RPM_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          TAURI_SIGNING_RPM_KEY_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          # AppImage Signing
+          SIGN: "1"
+          APPIMAGETOOL_SIGN_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          # Ad hoc signing identity
+          APPLE_SIGNING_IDENTITY: '-'
+          # Updater Signing
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: Quiver-v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version.
+          releaseName: 'Quiver v__VERSION__'
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target ${{ matrix.target }}
