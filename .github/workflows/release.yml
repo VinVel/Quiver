@@ -18,32 +18,26 @@ jobs:
         include:
           - name: Windows x64
             runner: windows-latest
-            kind: desktop
             target: x86_64-pc-windows-msvc
 
           - name: Windows arm64
             runner: windows-11-arm
-            kind: desktop
             target: aarch64-pc-windows-msvc
 
           - name: macOS Intel
             runner: macos-26-intel
-            kind: desktop
             target: x86_64-apple-darwin
 
           - name: macOS arm64
             runner: macos-26
-            kind: desktop
             target: aarch64-apple-darwin
 
           - name: Linux x64 GNU
             runner: ubuntu-24.04
-            kind: linux
             target: x86_64-unknown-linux-gnu
 
           - name: Linux arm64 GNU
             runner: ubuntu-24.04-arm
-            kind: linux
             target: aarch64-unknown-linux-gnu
 
     name: ${{ matrix.name }}
@@ -76,7 +70,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-          build-essential \
+            build-essential \
             curl \
             file \
             libayatana-appindicator3-dev \
@@ -95,6 +89,22 @@ jobs:
       - name: install frontend dependencies and build it
         run: bun install --frozen-lockfile && bun run build
 
+      - name: Load release changelog
+        id: changelog
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $path = Join-Path "changelog" "$tag.md"
+
+          if (-not (Test-Path -LiteralPath $path)) {
+            throw "Missing changelog file: $path"
+          }
+
+          $delimiter = [guid]::NewGuid().ToString()
+          "body<<$delimiter" >> $env:GITHUB_OUTPUT
+          Get-Content -LiteralPath $path -Raw >> $env:GITHUB_OUTPUT
+          "$delimiter" >> $env:GITHUB_OUTPUT
+
       - name: import windows certificate
         if: ${{ matrix.name == 'Windows x64' || matrix.name == 'Windows arm64' }}
         env:
@@ -106,14 +116,6 @@ jobs:
           certutil -decode certificate/tempCert.txt certificate/certificate.pfx
           Remove-Item -path certificate -include tempCert.txt
           Import-PfxCertificate -FilePath certificate/certificate.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText)
-            
-      - name: Import GPG Key
-        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux aarch64 GNU' }}
-        run: |
-         echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch --no-tty
-         echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
-         echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
-         gpg-connect-agent reloadagent /bye || true
 
       - name: Build Release Bundles
         uses: tauri-apps/tauri-action@v0
@@ -133,6 +135,7 @@ jobs:
         with:
           tagName: Quiver-v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version.
           releaseName: 'Quiver v__VERSION__'
+          releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
