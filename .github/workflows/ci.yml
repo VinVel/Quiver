@@ -65,7 +65,7 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: install dependencies (Linux only)
-        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux aarch64 GNU' }}
+        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux arm64 GNU' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -79,8 +79,7 @@ jobs:
             libxdo-dev \
             pkg-config \
             wget \
-            xdg-utils \ 
-            librsvg2-dev \
+            xdg-utils \
             patchelf \
 
       - name: install frontend dependencies and build it
