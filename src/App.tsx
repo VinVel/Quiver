@@ -31,6 +31,8 @@ import {
   Card,
   FeedbackMessage,
   Panel,
+  ScrollArea,
+  type ScrollAreaHandle,
   TextField,
   ToolbarField,
   Toggle,
@@ -114,7 +116,7 @@ function App() {
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const hasPreparedPreviewRef = useRef(false);
-  const commandOutputRef = useRef<HTMLPreElement | null>(null);
+  const commandOutputRef = useRef<ScrollAreaHandle | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -234,11 +236,12 @@ function App() {
   }, [buildPreview, link, selectedPresetId]);
 
   useEffect(() => {
-    if (!commandOutputRef.current) {
+    const commandOutputElement = commandOutputRef.current?.getScrollElement();
+    if (!commandOutputElement) {
       return;
     }
 
-    commandOutputRef.current.scrollTop = commandOutputRef.current.scrollHeight;
+    commandOutputElement.scrollTop = commandOutputElement.scrollHeight;
   }, [commandOutput, isDownloading]);
 
   useEffect(() => {
@@ -674,11 +677,14 @@ function App() {
               </div>
 
               {preview ? (
-                <>
+                <ScrollArea
+                  className="quiver-command-preview-scroll"
+                  contentClassName="quiver-command-preview-scroll__viewport"
+                >
                   <pre className="quiver-command-preview">
                     <code>{commandText}</code>
                   </pre>
-                </>
+                </ScrollArea>
               ) : (
                 <div className="quiver-empty-preview">
                   <Terminal aria-hidden="true" />
@@ -698,19 +704,25 @@ function App() {
               </div>
 
               {isDownloading && !outputText ? (
-                <pre
+                <ScrollArea
                   ref={commandOutputRef}
-                  className="quiver-command-preview quiver-command-preview--output"
+                  className="quiver-command-preview-scroll quiver-command-preview-scroll--output"
+                  contentClassName="quiver-command-preview-scroll__viewport"
                 >
-                  <code>Running yt-dlp...</code>
-                </pre>
+                  <pre className="quiver-command-preview">
+                    <code>Running yt-dlp...</code>
+                  </pre>
+                </ScrollArea>
               ) : outputText ? (
-                <pre
+                <ScrollArea
                   ref={commandOutputRef}
-                  className="quiver-command-preview quiver-command-preview--output"
+                  className="quiver-command-preview-scroll quiver-command-preview-scroll--output"
+                  contentClassName="quiver-command-preview-scroll__viewport"
                 >
-                  <code>{outputText}</code>
-                </pre>
+                  <pre className="quiver-command-preview">
+                    <code>{outputText}</code>
+                  </pre>
+                </ScrollArea>
               ) : (
                 <div className="quiver-empty-preview quiver-empty-preview--output">
                   <Terminal aria-hidden="true" />

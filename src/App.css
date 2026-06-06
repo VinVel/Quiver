@@ -450,19 +450,26 @@ input {
   height: var(--sizing-icon-small);
 }
 
-.quiver-command-preview {
+.quiver-command-preview-scroll {
   width: 100%;
   height: 100%;
   min-height: 0;
   max-height: none;
-  overflow: auto;
-  margin: 0;
-  padding: var(--spacing-card-padding);
   border-radius: var(--shape-radius-small);
   background: var(--surface-container-lowest);
   color: var(--on-surface);
   box-shadow: inset 0 0 0 1px
     color-mix(in srgb, var(--outline-variant) 72%, transparent);
+}
+
+.quiver-command-preview-scroll__viewport {
+  height: 100%;
+}
+
+.quiver-command-preview {
+  min-height: 100%;
+  margin: 0;
+  padding: var(--spacing-card-padding);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -475,7 +482,7 @@ input {
   line-height: 1.6;
 }
 
-.quiver-command-preview--output {
+.quiver-command-preview-scroll--output {
   max-height: none;
 }
 
