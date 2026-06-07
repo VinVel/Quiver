@@ -33,11 +33,11 @@ jobs:
             target: aarch64-apple-darwin
 
           - name: Linux x64 GNU
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
 
           - name: Linux arm64 GNU
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
 
     name: ${{ matrix.name }}
@@ -131,6 +131,9 @@ jobs:
           # Updater Signing
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Appimage specific fixes
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          NO_STRIP: true
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Quiver v__VERSION__'
