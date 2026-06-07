@@ -82,17 +82,12 @@ jobs:
             wget \
             xdg-utils \
             patchelf \
-            libfuse2 \
             rpm \
             gnupg
 
       - name: install frontend dependencies and build it
         run: bun install --frozen-lockfile && bun run build
       
-      - name: Override tauri-cli with custom AppImage format (Linux)
-        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux arm64 GNU' }}
-        run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --branch feat/truly-portable-appimage --force
-
       - name: Load release changelog
         id: changelog
         shell: pwsh
@@ -128,9 +123,6 @@ jobs:
           # RPM Signing
           TAURI_SIGNING_RPM_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           TAURI_SIGNING_RPM_KEY_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          # AppImage Signing
-          SIGN: "1"
-          APPIMAGETOOL_SIGN_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           # Ad hoc signing identity
           APPLE_SIGNING_IDENTITY: '-'
           # Updater Signing
@@ -143,5 +135,4 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
-          tauriScript: ${{ (matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux arm64 GNU') && 'cargo tauri' || 'bun tauri' }}
           args: --target ${{ matrix.target }}

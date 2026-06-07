@@ -64,18 +64,12 @@ brew install ffmpeg
 
 Use the package for your distribution from the latest release:
 
-
-
 ```sh
 sudo apt install ./quiver_*.deb
-sudo dnf install ./quiver-*.rpm
 ```
 
-Alternatively, download and run the AppImage from the same release page:
-
 ```sh
-chmod +x Quiver-*.AppImage
-./Quiver-*.AppImage
+sudo dnf install ./quiver-*.rpm
 ```
 
 ## Advanced Subtitle Pipeline
