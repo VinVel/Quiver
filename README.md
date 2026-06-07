@@ -54,7 +54,7 @@ The macOS `.dmg` is not signed or notarized. If macOS blocks it after download, 
 xattr -d com.apple.quarantine ~/Downloads/Quiver-*.dmg
 ```
 
-On macOS `ffmpeg` and `ffprobe` need to be installed seperately with [Homebrew](https://brew.sh/):
+On macOS `ffmpeg` and `ffprobe` need to be installed separately with [Homebrew](https://brew.sh/):
 
 ```sh
 brew install ffmpeg
@@ -102,7 +102,7 @@ Install frontend dependencies:
 bun install
 ```
 
-Run the Tauri app in developement mode:
+Run the Tauri app in development mode:
 
 ```sh
 bun tauri dev
@@ -136,13 +136,13 @@ During local development, `QUIVER_YT_DLP_BINARY` can point Quiver at a custom `y
 
 I would advise you read through the yt-dlp wiki, especially [this section](https://github.com/yt-dlp/yt-dlp-wiki/blob/master/FAQ.md#how-do-i-pass-cookies-to-yt-dlp).
 
-### Why do you need to download ffmpeg seperately on macOS?
+### Why do you need to download ffmpeg separately on macOS?
 
-It is practically impossible to download verifiable staatic ffmpeg executables for macOS. While there is [this](https://evermeet.cx/ffmpeg/), the link to get the signatures are broken and they don't provide builds for macOS running on arm devices.
+It is practically impossible to download verifiable static ffmpeg executables for macOS. While there is [this](https://evermeet.cx/ffmpeg/), the link to get the signatures are broken and they don't provide builds for macOS running on arm devices.
 
 ### Can I edit the Command Preview to customize it how I want?
 
-Currenly not. You can use the Input Fields to specify save directory and cookies file. Trying to support custom commands mixed in with the preview is a UX disaster, error prone when it comes to parsing on different OSs and generally a headache.
+Currently not. You can use the Input Fields to specify save directory and cookies file. Trying to support custom commands mixed in with the preview is a UX disaster, error prone when it comes to parsing on different OSs and generally a headache.
 
 ### Why is the installer file so big?
 
@@ -150,7 +150,7 @@ Quiver makes use of 6 (4 on macOS) individual binaries that are packaged alongsi
 
 ### How to verify your builds?
 
-All builds are built with github actions for reproducible builds. Furthermore on Linux and Windows you can check the signage signatures. 
+All builds are built with Github actions for verifiable CI builds. Furthermore on Linux and Windows you can check the signatures. 
 
 For Linux, you can download my public gpg key from [https://keys.openpgp.org/](https://keys.openpgp.org/search?q=dev%40velcore.net). 
 
