@@ -82,6 +82,7 @@ jobs:
             wget \
             xdg-utils \
             patchelf \
+            libfuse2 \
             rpm \
             gnupg
 
