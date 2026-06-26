@@ -1,5 +1,18 @@
 {
   "bundle": {
-    "targets": ["deb", "rpm"]
+    "targets": ["deb", "rpm"],
+    "externalBin": [
+      "binaries/deno",
+      "binaries/bgutil-pot",
+      "binaries/ytsubconverter"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["ffmpeg", "yt-dlp"]
+      },
+      "rpm": {
+        "depends": ["ffmpeg", "yt-dlp"]
+      }
+    }
   }
 }

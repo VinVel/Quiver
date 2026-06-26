@@ -140,6 +140,10 @@ fn configure_build_tracking() {
 }
 
 fn stage_yt_dlp_sidecar() {
+    if cfg!(target_os = "linux") {
+        return;
+    }
+
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let expected_sidecar = manifest_dir
         .join("binaries")
@@ -195,8 +199,23 @@ fn stage_yt_sub_converter_sidecar() {
         return;
     }
 
-    let Some(built_binary) = build_yt_sub_converter(&yt_sub_converter_dir, &manifest_dir) else {
-        return;
+    #[cfg(target_os = "windows")]
+    let built_binary = {
+        let Some(built_binary) = build_yt_sub_converter_windows(&yt_sub_converter_dir) else {
+            return;
+        };
+        built_binary
+    };
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let built_binary = build_yt_sub_converter_self_contained(&yt_sub_converter_dir, &manifest_dir);
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    let built_binary = {
+        panic!(
+            "YTSubConverter sidecar build is not configured for target {}",
+            build_target_triple()
+        );
     };
 
     fs::create_dir_all(
@@ -219,29 +238,6 @@ fn stage_yt_sub_converter_sidecar() {
 
         fs::set_permissions(&expected_sidecar, fs::Permissions::from_mode(0o755))
             .expect("failed to mark YTSubConverter sidecar executable");
-    }
-}
-
-fn build_yt_sub_converter(yt_sub_converter_dir: &Path, _manifest_dir: &Path) -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        build_yt_sub_converter_windows(yt_sub_converter_dir)
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        Some(build_yt_sub_converter_self_contained(
-            yt_sub_converter_dir,
-            _manifest_dir,
-        ))
-    }
-
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    {
-        panic!(
-            "YTSubConverter sidecar build is not configured for target {}",
-            build_target_triple()
-        );
     }
 }
 
@@ -738,7 +734,7 @@ fn stage_deno_sidecar() {
 }
 
 fn stage_ffmpeg_sidecars() {
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
         return;
     }
 

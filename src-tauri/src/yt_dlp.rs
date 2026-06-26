@@ -91,10 +91,17 @@ impl YtDlpRunner {
             return Err(YtDlpError::MissingBinary(vec![path]));
         }
 
-        Ok(Self {
-            command: YtDlpCommand::Sidecar(app),
-            plugin_dirs: Vec::new(),
-        })
+        if cfg!(target_os = "linux") {
+            Ok(Self {
+                command: YtDlpCommand::Override(YT_DLP_BINARY_NAME.into()),
+                plugin_dirs: Vec::new(),
+            })
+        } else {
+            Ok(Self {
+                command: YtDlpCommand::Sidecar(app),
+                plugin_dirs: Vec::new(),
+            })
+        }
     }
 
     pub async fn run<I, S>(&self, args: I) -> Result<YtDlpCommandOutput, YtDlpError>
@@ -215,12 +222,12 @@ fn bundled_deno_path() -> Option<PathBuf> {
 }
 
 pub fn bundled_ffmpeg_location() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         None
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         current_exe_sidecar_dir_with_tools([FFMPEG_BINARY_NAME, FFPROBE_BINARY_NAME])
     }
@@ -235,36 +242,37 @@ pub fn ffprobe_path() -> PathBuf {
 }
 
 fn bundled_ffmpeg_path() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         None
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         bundled_tool_path(FFMPEG_BINARY_NAME)
     }
 }
 
 fn bundled_ffprobe_path() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         None
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         bundled_tool_path(FFPROBE_BINARY_NAME)
     }
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn bundled_tool_path(name: &str) -> Option<PathBuf> {
     current_exe_sidecar_path(name)
         .filter(|path| path.is_file())
         .or_else(|| workspace_binaries_sidecar_path(name))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn current_exe_sidecar_dir_with_tools<const N: usize>(names: [&str; N]) -> Option<PathBuf> {
     let current_exe = env::current_exe().ok()?;
     let sidecar_dir = current_exe.parent()?.to_path_buf();
@@ -272,7 +280,7 @@ fn current_exe_sidecar_dir_with_tools<const N: usize>(names: [&str; N]) -> Optio
     sidecar_dir_contains_tools(&sidecar_dir, names).then_some(sidecar_dir)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sidecar_dir_contains_tools<const N: usize>(directory: &Path, names: [&str; N]) -> bool {
     names
         .into_iter()
