@@ -18,7 +18,7 @@ use tar::Archive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
-const DENO_VERSION: &str = "2.8.0";
+const DENO_VERSION: &str = "2.9.2";
 const YT_DLP_RELEASE_BASE_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download";
 const YT_DLP_PUBLIC_KEY_URL: &str =
     "https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/public.key";
