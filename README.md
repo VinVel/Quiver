@@ -13,7 +13,7 @@ Quiver is a small desktop GUI for `yt-dlp`. Paste a link, choose the closest pre
 - One-window download flow: URL, preset, output folder, optional cookies file, command preview, and live output.
 - Eight built-in presets for YouTube/general downloads, audio/video, with/without cookies.
 - YouTube-specific POT support through a bundled local `bgutil` provider.
-- Bundled `yt-dlp`, `Deno`, POT provider, and `YTSubConverter`, with bundled `ffmpeg` and `ffprobe` for Windows and Linux release builds.
+- Bundled `yt-dlp` on Windows and macOS, plus bundled `Deno`, POT provider, and `YTSubConverter`; Linux packages use the distribution-provided `yt-dlp`. Windows and Linux release builds bundle `ffmpeg` and `ffprobe`.
 - Command preview before execution, so you can see exactly what Quiver will run.
 - Live stdout/stderr output while `yt-dlp` is running.
 - Persistent save directory, cookies path, theme mode, and color preset settings.
@@ -81,6 +81,7 @@ The Advanced Subtitle Pipeline is optional and only applies to YouTube video pre
 Since this is a Tauri project, it is advisable to first checkout the [Tauri prerequisites](https://tauri.app/start/prerequisites/).
 
 Other prerequisites: 
+ - [uv (Windows/MacOS)](https://docs.astral.sh/uv/getting-started/installation/)
  - [pnpm](https://pnpm.io/installation)
  - [.NET 8 (Linux/MacOS)](https://dotnet.microsoft.com/en-us/learn/dotnet/hello-world-tutorial/install)
 
@@ -122,7 +123,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features
 ```
 
-During local development, `QUIVER_YT_DLP_BINARY` can point Quiver at a custom `yt-dlp` binary. Release builds are intended to use the bundled sidecar.
+During local development, `QUIVER_YT_DLP_BINARY` can point Quiver at a custom `yt-dlp` binary. Windows and macOS release builds use the bundled sidecar; Linux packages use the declared system `yt-dlp` dependency.
 
 ## FAQ
 

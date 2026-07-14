@@ -2,28 +2,17 @@ use std::{
     env, fs,
     io::Cursor,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output},
 };
 
-use sequoia_openpgp::{
-    Cert, KeyHandle, Result as OpenPgpResult,
-    parse::{
-        Parse,
-        stream::{DetachedVerifierBuilder, MessageLayer, MessageStructure, VerificationHelper},
-    },
-    policy::StandardPolicy,
-};
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256};
 use tar::Archive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 const DENO_VERSION: &str = "2.9.2";
-const YT_DLP_RELEASE_BASE_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download";
-const YT_DLP_PUBLIC_KEY_URL: &str =
-    "https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/public.key";
-const YT_DLP_SHA512_SUMS: &str = "SHA2-512SUMS";
-const YT_DLP_SHA512_SIGNATURE: &str = "SHA2-512SUMS.sig";
+const YT_DLP_PYTHON_VERSION: &str = "3.12";
+const YT_DLP_BUILD_RECIPE: &str = "pyinstaller-default-curl-cffi-v1";
 const FFMPEG_BUILDS_RELEASE_BASE_URL: &str =
     "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download";
 const FFMPEG_BUILDS_CHECKSUMS: &str = "checksums.sha256";
@@ -140,41 +129,352 @@ fn configure_build_tracking() {
     println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/src");
     println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/plugin/pyproject.toml");
     println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/plugin/yt_dlp_plugins");
+    println!("cargo:rerun-if-changed=../yt-dlp/pyproject.toml");
+    println!("cargo:rerun-if-changed=../yt-dlp/THIRD_PARTY_LICENSES.txt");
+    println!("cargo:rerun-if-changed=../yt-dlp/bundle");
+    println!("cargo:rerun-if-changed=../yt-dlp/devscripts");
+    println!("cargo:rerun-if-changed=../yt-dlp/yt_dlp");
 }
 
 fn stage_yt_dlp_sidecar() {
-    if cfg!(target_os = "linux") {
+    if !cfg!(any(target_os = "windows", target_os = "macos")) {
         return;
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .expect("src-tauri should be inside the workspace root");
+    let yt_dlp_source_dir = workspace_root.join("yt-dlp");
+    assert!(
+        yt_dlp_source_dir.join("pyproject.toml").is_file(),
+        "yt-dlp submodule is missing at {}; initialize it before building Quiver",
+        yt_dlp_source_dir.display()
+    );
+
+    let target = build_target_triple();
+    let host = env::var("HOST").unwrap_or_else(|_| host_target_triple().to_string());
+    assert_eq!(
+        target, host,
+        "yt-dlp must be built natively because PyInstaller freezes the host Python interpreter (host: {host}, target: {target})"
+    );
+
     let expected_sidecar = manifest_dir
         .join("binaries")
         .join(sidecar_file_name_for_host(YT_DLP_SIDECAR_NAME));
+    let build_stamp_path = manifest_dir
+        .join("binaries")
+        .join(format!("{YT_DLP_SIDECAR_NAME}-{target}.build-stamp"));
+    let source_fingerprint = yt_dlp_source_fingerprint(&yt_dlp_source_dir);
+    let expected_build_stamp =
+        format!("{YT_DLP_BUILD_RECIPE}:{YT_DLP_PYTHON_VERSION}:{target}:{source_fingerprint}\n");
 
-    if expected_sidecar.is_file() {
+    if expected_sidecar.is_file()
+        && fs::read_to_string(&build_stamp_path).is_ok_and(|stamp| stamp == expected_build_stamp)
+    {
         return;
     }
 
-    let asset_name = yt_dlp_asset_name(&build_target_triple());
-    let checksums = download_text(&format!("{YT_DLP_RELEASE_BASE_URL}/{YT_DLP_SHA512_SUMS}"));
-    let signature = download(&format!(
-        "{YT_DLP_RELEASE_BASE_URL}/{YT_DLP_SHA512_SIGNATURE}"
-    ));
-    let public_key = download(YT_DLP_PUBLIC_KEY_URL);
-    verify_gpg_signature(
-        checksums.as_bytes(),
-        &signature,
-        &public_key,
-        YT_DLP_SHA512_SUMS,
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
+    let build_dir = prepare_yt_dlp_build_directory(&yt_dlp_source_dir, &out_dir);
+    let python = prepare_yt_dlp_build_environment(&build_dir, &target);
+    generate_yt_dlp_lazy_extractors(&build_dir, &python);
+    let built_binary = build_yt_dlp_executable(&build_dir, &python);
+    verify_yt_dlp_executable(&built_binary);
+
+    fs::create_dir_all(
+        expected_sidecar
+            .parent()
+            .expect("yt-dlp sidecar path should have a parent directory"),
+    )
+    .expect("failed to create yt-dlp sidecar output directory");
+    fs::copy(&built_binary, &expected_sidecar).unwrap_or_else(|error| {
+        panic!(
+            "failed to copy built yt-dlp executable from {} to {}: {error}",
+            built_binary.display(),
+            expected_sidecar.display()
+        )
+    });
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&expected_sidecar, fs::Permissions::from_mode(0o755))
+            .expect("failed to mark yt-dlp sidecar executable");
+    }
+
+    fs::write(&build_stamp_path, expected_build_stamp).unwrap_or_else(|error| {
+        panic!(
+            "failed to write yt-dlp build stamp at {}: {error}",
+            build_stamp_path.display()
+        )
+    });
+}
+
+fn yt_dlp_source_fingerprint(source_dir: &Path) -> String {
+    let mut hasher = Sha256::new();
+    for relative_path in [
+        "pyproject.toml",
+        "THIRD_PARTY_LICENSES.txt",
+        "bundle",
+        "devscripts",
+        "yt_dlp",
+    ] {
+        hash_source_path(source_dir, &source_dir.join(relative_path), &mut hasher);
+    }
+
+    format!("{:x}", hasher.finalize())
+}
+
+fn hash_source_path(source_root: &Path, path: &Path, hasher: &mut Sha256) {
+    assert!(
+        path.exists(),
+        "required yt-dlp source path is missing: {}",
+        path.display()
     );
 
-    let binary = download(&format!("{YT_DLP_RELEASE_BASE_URL}/{asset_name}"));
-    verify_sha512(&binary, &checksums, asset_name);
-    write_executable(
-        &mut Cursor::new(binary),
-        &expected_sidecar,
-        YT_DLP_SIDECAR_NAME,
+    if path.is_dir() {
+        let mut entries = fs::read_dir(path)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "failed to read yt-dlp source directory {}: {error}",
+                    path.display()
+                )
+            })
+            .map(|entry| entry.expect("failed to read yt-dlp source directory entry"))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(fs::DirEntry::file_name);
+
+        for entry in entries {
+            hash_source_path(source_root, &entry.path(), hasher);
+        }
+        return;
+    }
+
+    let relative_path = path.strip_prefix(source_root).unwrap_or_else(|_| {
+        panic!(
+            "yt-dlp source path {} is outside {}",
+            path.display(),
+            source_root.display()
+        )
+    });
+    hasher.update(relative_path.to_string_lossy().as_bytes());
+    hasher.update([0]);
+    hasher.update(fs::read(path).unwrap_or_else(|error| {
+        panic!(
+            "failed to read yt-dlp source file {}: {error}",
+            path.display()
+        )
+    }));
+    hasher.update([0]);
+}
+
+fn prepare_yt_dlp_build_directory(source_dir: &Path, out_dir: &Path) -> PathBuf {
+    let build_dir = out_dir.join("yt-dlp-source");
+    if build_dir.exists() {
+        fs::remove_dir_all(&build_dir).unwrap_or_else(|error| {
+            panic!(
+                "failed to clear yt-dlp build directory at {}: {error}",
+                build_dir.display()
+            )
+        });
+    }
+
+    for directory in ["bundle", "devscripts", "yt_dlp"] {
+        copy_directory(&source_dir.join(directory), &build_dir.join(directory));
+    }
+    for file in ["pyproject.toml", "THIRD_PARTY_LICENSES.txt"] {
+        copy_file_if_exists(&source_dir.join(file), &build_dir.join(file));
+    }
+
+    build_dir
+}
+
+fn prepare_yt_dlp_build_environment(build_dir: &Path, target: &str) -> PathBuf {
+    let virtual_environment = build_dir.join(".venv");
+    let mut create_environment = Command::new("uv");
+    create_environment
+        .args([
+            "venv",
+            "--managed-python",
+            "--python",
+            YT_DLP_PYTHON_VERSION,
+        ])
+        .arg(&virtual_environment)
+        .current_dir(build_dir);
+    run_yt_dlp_build_command(
+        &mut create_environment,
+        "create the Python environment; install uv and ensure it is available on PATH",
+    );
+
+    let python = yt_dlp_python_executable(&virtual_environment);
+    assert!(
+        python.is_file(),
+        "uv created the yt-dlp environment but Python was not found at {}",
+        python.display()
+    );
+
+    let requirements_dir = build_dir.join("bundle").join("requirements");
+    let pyinstaller_requirements = requirements_dir.join(yt_dlp_pyinstaller_requirements(target));
+    // Upstream generates curl-cffi.txt from the complete default extra plus curl-cffi. This
+    // includes yt-dlp-ejs, Mutagen, PyCryptodome, and all recommended networking libraries.
+    // SecretStorage is Linux-only, and Quiver supplies Deno as a separate sidecar.
+    let feature_requirements = requirements_dir.join("curl-cffi.txt");
+    let mut install_dependencies = Command::new("uv");
+    install_dependencies
+        .args(["pip", "install", "--python"])
+        .arg(&python)
+        .args(["--require-hashes", "--strict", "--requirements"])
+        .arg(&pyinstaller_requirements)
+        .arg("--requirements")
+        .arg(&feature_requirements)
+        .current_dir(build_dir);
+    run_yt_dlp_build_command(
+        &mut install_dependencies,
+        "install yt-dlp's hash-pinned PyInstaller, default, yt-dlp-ejs, and curl-cffi dependencies",
+    );
+
+    verify_yt_dlp_python_dependencies(build_dir, &python);
+    python
+}
+
+fn yt_dlp_pyinstaller_requirements(target: &str) -> &'static str {
+    match target {
+        "aarch64-apple-darwin" | "x86_64-apple-darwin" => "pyinstaller.txt",
+        "aarch64-pc-windows-msvc" => "win-arm64-pyinstaller.txt",
+        "x86_64-pc-windows-msvc" => "win-x64-pyinstaller.txt",
+        unsupported => panic!("yt-dlp source build is not configured for target {unsupported}"),
+    }
+}
+
+fn yt_dlp_python_executable(virtual_environment: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        virtual_environment.join("Scripts").join("python.exe")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        virtual_environment.join("bin").join("python")
+    }
+}
+
+fn verify_yt_dlp_python_dependencies(build_dir: &Path, python: &Path) {
+    let imports = [
+        "brotli",
+        "certifi",
+        "Cryptodome",
+        "curl_cffi",
+        "mutagen",
+        "requests",
+        "urllib3",
+        "websockets",
+        "yt_dlp_ejs",
+    ]
+    .join(", ");
+    let mut command = Command::new(python);
+    command
+        .args(["-c", &format!("import {imports}")])
+        .current_dir(build_dir);
+    run_yt_dlp_build_command(&mut command, "verify yt-dlp's optional Python dependencies");
+}
+
+fn generate_yt_dlp_lazy_extractors(build_dir: &Path, python: &Path) {
+    let mut command = Command::new(python);
+    command
+        .arg("devscripts/make_lazy_extractors.py")
+        .current_dir(build_dir);
+    run_yt_dlp_build_command(&mut command, "generate yt-dlp's lazy extractors");
+}
+
+fn build_yt_dlp_executable(build_dir: &Path, python: &Path) -> PathBuf {
+    let mut command = Command::new(python);
+    command
+        .args(["-m", "bundle.pyinstaller"])
+        .current_dir(build_dir);
+    run_yt_dlp_build_command(&mut command, "freeze yt-dlp with PyInstaller");
+
+    let dist_dir = build_dir.join("dist");
+    let mut candidates = fs::read_dir(&dist_dir)
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to read yt-dlp PyInstaller output directory {}: {error}",
+                dist_dir.display()
+            )
+        })
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("yt-dlp"))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    assert_eq!(
+        candidates.len(),
+        1,
+        "expected exactly one frozen yt-dlp executable in {}, found: {candidates:?}",
+        dist_dir.display()
+    );
+    candidates.remove(0)
+}
+
+fn verify_yt_dlp_executable(executable: &Path) {
+    let output = Command::new(executable)
+        .args(["--ignore-config", "--verbose", "--list-impersonate-targets"])
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to start built yt-dlp executable at {}: {error}",
+                executable.display()
+            )
+        });
+    assert_command_output_success(&output, "verify the built yt-dlp executable");
+
+    let diagnostic_output = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_ascii_lowercase()
+    .replace('_', "-");
+    for dependency in [
+        "brotli",
+        "certifi",
+        "cryptodome",
+        "curl-cffi",
+        "mutagen",
+        "requests",
+        "urllib3",
+        "websockets",
+        "yt-dlp-ejs",
+    ] {
+        assert!(
+            diagnostic_output.contains(dependency),
+            "built yt-dlp executable did not report required dependency {dependency}; output:\n{diagnostic_output}"
+        );
+    }
+}
+
+fn run_yt_dlp_build_command(command: &mut Command, description: &str) {
+    let status = command
+        .status()
+        .unwrap_or_else(|error| panic!("failed to {description}: {error}"));
+    assert!(status.success(), "failed to {description}: {status}");
+}
+
+fn assert_command_output_success(output: &Output, description: &str) {
+    assert!(
+        output.status.success(),
+        "failed to {description}: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -437,17 +737,6 @@ fn path_to_str(path: &Path) -> &str {
             path.display()
         )
     })
-}
-
-fn yt_dlp_asset_name(target: &str) -> &'static str {
-    match target {
-        "aarch64-apple-darwin" | "x86_64-apple-darwin" => "yt-dlp_macos",
-        "aarch64-pc-windows-msvc" => "yt-dlp_arm64.exe",
-        "x86_64-pc-windows-msvc" => "yt-dlp.exe",
-        "aarch64-unknown-linux-gnu" => "yt-dlp_linux_aarch64",
-        "x86_64-unknown-linux-gnu" => "yt-dlp_linux",
-        unsupported => panic!("yt-dlp release asset is not configured for target {unsupported}"),
-    }
 }
 
 fn write_executable(reader: &mut impl std::io::Read, destination: &Path, name: &str) {
@@ -965,21 +1254,6 @@ fn verify_sha256_for_file(bytes: &[u8], checksums: &str, asset_name: &str) {
     );
 }
 
-fn verify_sha512(bytes: &[u8], checksums: &str, asset_name: &str) {
-    let expected = checksums
-        .lines()
-        .filter_map(parse_gnu_checksum_line)
-        .find_map(|(hash, file_name)| (file_name == asset_name).then_some(hash))
-        .unwrap_or_else(|| panic!("signed SHA-512 sums did not contain an entry for {asset_name}"))
-        .to_ascii_lowercase();
-    let actual = format!("{:x}", Sha512::digest(bytes));
-
-    assert_eq!(
-        expected, actual,
-        "SHA-512 mismatch for downloaded yt-dlp asset {asset_name}"
-    );
-}
-
 fn parse_sha256_checksum_line(line: &str) -> Option<(&str, &str)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
@@ -992,63 +1266,6 @@ fn parse_sha256_checksum_line(line: &str) -> Option<(&str, &str)> {
 
     (hash.len() == 64 && hash.chars().all(|character| character.is_ascii_hexdigit()))
         .then_some((hash, file_name))
-}
-
-fn parse_gnu_checksum_line(line: &str) -> Option<(&str, &str)> {
-    let line = line.trim();
-    if line.is_empty() || line.starts_with('#') {
-        return None;
-    }
-
-    let (hash, file_name) = line.split_once(char::is_whitespace)?;
-    let file_name = file_name.trim_start();
-    let file_name = file_name.strip_prefix('*').unwrap_or(file_name);
-
-    (hash.len() == 128 && hash.chars().all(|character| character.is_ascii_hexdigit()))
-        .then_some((hash, file_name))
-}
-
-fn verify_gpg_signature(data: &[u8], signature: &[u8], public_key: &[u8], signed_file_name: &str) {
-    let cert = Cert::from_bytes(public_key)
-        .unwrap_or_else(|error| panic!("failed to parse yt-dlp public GPG key: {error}"));
-    let policy = StandardPolicy::new();
-    let helper = GpgVerificationHelper { cert };
-    let mut verifier = DetachedVerifierBuilder::from_bytes(signature)
-        .unwrap_or_else(|error| {
-            panic!("failed to parse detached GPG signature for {signed_file_name}: {error}")
-        })
-        .with_policy(&policy, None, helper)
-        .unwrap_or_else(|error| {
-            panic!("failed to create GPG verifier for {signed_file_name}: {error}")
-        });
-
-    verifier
-        .verify_bytes(data)
-        .unwrap_or_else(|error| panic!("GPG verification failed for {signed_file_name}: {error}"));
-}
-
-struct GpgVerificationHelper {
-    cert: Cert,
-}
-
-impl VerificationHelper for GpgVerificationHelper {
-    fn get_certs(&mut self, _ids: &[KeyHandle]) -> OpenPgpResult<Vec<Cert>> {
-        Ok(vec![self.cert.clone()])
-    }
-
-    fn check(&mut self, structure: MessageStructure<'_>) -> OpenPgpResult<()> {
-        for layer in structure {
-            if let MessageLayer::SignatureGroup { results } = layer
-                && results.iter().any(Result::is_ok)
-            {
-                return Ok(());
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "detached signature was not made by the yt-dlp release key"
-        ))
-    }
 }
 
 fn extract_deno_binary(archive: &[u8], expected_sidecar: &Path) {
