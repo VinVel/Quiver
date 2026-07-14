@@ -81,7 +81,7 @@ The Advanced Subtitle Pipeline is optional and only applies to YouTube video pre
 Since this is a Tauri project, it is advisable to first checkout the [Tauri prerequisites](https://tauri.app/start/prerequisites/).
 
 Other prerequisites: 
- - [Bun](https://bun.com/)
+ - [pnpm](https://pnpm.io/installation)
  - [.NET 8 (Linux/MacOS)](https://dotnet.microsoft.com/en-us/learn/dotnet/hello-world-tutorial/install)
 
 This repo contains submodules, therefore you should clone the repo with the following command:
@@ -93,25 +93,25 @@ git clone https://github.com/VinVel/Quiver.git --recurse-submodules && cd ./Quiv
 Install frontend dependencies:
 
 ```sh
-bun install
+pnpm install
 ```
 
 Run the Tauri app in development mode:
 
 ```sh
-bun tauri dev
+pnpm tauri dev
 ```
 
 Build the frontend:
 
 ```sh
-bun run build
+pnpm build
 ```
 
 Build the desktop app:
 
 ```sh
-bun tauri build --no-sign
+pnpm tauri build --no-sign
 ```
 
 For Rust changes, also run:

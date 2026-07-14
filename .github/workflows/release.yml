@@ -48,10 +48,15 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
         with:
-          bun-version: latest
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install Rust toolchain and targets
         uses: dtolnay/rust-toolchain@master
@@ -85,8 +90,10 @@ jobs:
             rpm \
             gnupg
 
-      - name: install frontend dependencies and build it
-        run: bun install --frozen-lockfile && bun run build
+      - name: Install frontend dependencies and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
       
       - name: Load release changelog
         id: changelog
