@@ -11,13 +11,12 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 const DENO_VERSION: &str = "2.9.2";
-const YT_DLP_PYTHON_VERSION: &str = "3.12";
-const YT_DLP_BUILD_RECIPE: &str = "pyinstaller-default-curl-cffi-v1";
+const YT_DLP_BUILD_RECIPE: &str = "pyinstaller-default-curl-cffi-v2";
 const FFMPEG_BUILDS_RELEASE_BASE_URL: &str =
     "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download";
 const FFMPEG_BUILDS_CHECKSUMS: &str = "checksums.sha256";
 const BGUTIL_POT_PROVIDER_SIDECAR_NAME: &str = "bgutil-pot";
-const BGUTIL_POT_PROVIDER_BUILD_RECIPE: &str = "deno-compile-v1";
+const BGUTIL_POT_PROVIDER_BUILD_RECIPE: &str = "deno-compile-windows-arm64-x64-v3";
 const DENO_SIDECAR_NAME: &str = "deno";
 const FFMPEG_SIDECAR_NAME: &str = "ffmpeg";
 const FFPROBE_SIDECAR_NAME: &str = "ffprobe";
@@ -166,8 +165,9 @@ fn stage_yt_dlp_sidecar() {
         .join("binaries")
         .join(format!("{YT_DLP_SIDECAR_NAME}-{target}.build-stamp"));
     let source_fingerprint = yt_dlp_source_fingerprint(&yt_dlp_source_dir);
+    let python_request = yt_dlp_python_request(&target);
     let expected_build_stamp =
-        format!("{YT_DLP_BUILD_RECIPE}:{YT_DLP_PYTHON_VERSION}:{target}:{source_fingerprint}\n");
+        format!("{YT_DLP_BUILD_RECIPE}:{python_request}:{target}:{source_fingerprint}\n");
 
     if expected_sidecar.is_file()
         && fs::read_to_string(&build_stamp_path).is_ok_and(|stamp| stamp == expected_build_stamp)
@@ -177,7 +177,7 @@ fn stage_yt_dlp_sidecar() {
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
     let build_dir = prepare_yt_dlp_build_directory(&yt_dlp_source_dir, &out_dir);
-    let python = prepare_yt_dlp_build_environment(&build_dir, &target);
+    let python = prepare_yt_dlp_build_environment(&build_dir, &target, python_request);
     generate_yt_dlp_lazy_extractors(&build_dir, &python);
     let built_binary = build_yt_dlp_executable(&build_dir, &python);
     verify_yt_dlp_executable(&built_binary);
@@ -291,16 +291,15 @@ fn prepare_yt_dlp_build_directory(source_dir: &Path, out_dir: &Path) -> PathBuf 
     build_dir
 }
 
-fn prepare_yt_dlp_build_environment(build_dir: &Path, target: &str) -> PathBuf {
+fn prepare_yt_dlp_build_environment(
+    build_dir: &Path,
+    target: &str,
+    python_request: &str,
+) -> PathBuf {
     let virtual_environment = build_dir.join(".venv");
     let mut create_environment = Command::new("uv");
     create_environment
-        .args([
-            "venv",
-            "--managed-python",
-            "--python",
-            YT_DLP_PYTHON_VERSION,
-        ])
+        .args(["venv", "--managed-python", "--python", python_request])
         .arg(&virtual_environment)
         .current_dir(build_dir);
     run_yt_dlp_build_command(
@@ -314,6 +313,7 @@ fn prepare_yt_dlp_build_environment(build_dir: &Path, target: &str) -> PathBuf {
         "uv created the yt-dlp environment but Python was not found at {}",
         python.display()
     );
+    verify_yt_dlp_python_architecture(build_dir, &python, target);
 
     let requirements_dir = build_dir.join("bundle").join("requirements");
     let pyinstaller_requirements = requirements_dir.join(yt_dlp_pyinstaller_requirements(target));
@@ -337,6 +337,45 @@ fn prepare_yt_dlp_build_environment(build_dir: &Path, target: &str) -> PathBuf {
 
     verify_yt_dlp_python_dependencies(build_dir, &python);
     python
+}
+
+fn yt_dlp_python_request(target: &str) -> &'static str {
+    match target {
+        "aarch64-apple-darwin" => "cpython-3.12-macos-aarch64-none",
+        "x86_64-apple-darwin" => "cpython-3.12-macos-x86_64-none",
+        "aarch64-pc-windows-msvc" => "cpython-3.12-windows-aarch64-none",
+        "x86_64-pc-windows-msvc" => "cpython-3.12-windows-x86_64-none",
+        unsupported => panic!("yt-dlp Python is not configured for target {unsupported}"),
+    }
+}
+
+fn verify_yt_dlp_python_architecture(build_dir: &Path, python: &Path, target: &str) {
+    let expected_machine = match target {
+        "aarch64-apple-darwin" | "aarch64-pc-windows-msvc" => "arm64",
+        "x86_64-apple-darwin" => "x86_64",
+        "x86_64-pc-windows-msvc" => "amd64",
+        unsupported => panic!("yt-dlp Python is not configured for target {unsupported}"),
+    };
+    let output = Command::new(python)
+        .args(["-c", "import platform; print(platform.machine().lower())"])
+        .current_dir(build_dir)
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to inspect yt-dlp Python architecture at {}: {error}",
+                python.display()
+            )
+        });
+    assert_command_output_success(&output, "inspect the yt-dlp Python architecture");
+
+    let actual_machine = String::from_utf8(output.stdout)
+        .expect("yt-dlp Python architecture output should be UTF-8")
+        .trim()
+        .to_ascii_lowercase();
+    assert_eq!(
+        actual_machine, expected_machine,
+        "uv selected a Python interpreter for {actual_machine}, but yt-dlp target {target} requires {expected_machine}"
+    );
 }
 
 fn yt_dlp_pyinstaller_requirements(target: &str) -> &'static str {
@@ -797,8 +836,14 @@ fn stage_bgutil_pot_provider_sidecar() {
     let host = env::var("HOST").unwrap_or_else(|_| host_target_triple().to_string());
     assert_eq!(
         target, host,
-        "bgutil POT provider sidecar must be built natively because canvas contains a target-specific native addon (host: {host}, target: {target})"
+        "bgutil POT provider sidecar must be built natively because the build executes the target-specific Deno runtime (host: {host}, target: {target})"
     );
+    let deno_compile_target = bgutil_deno_compile_target(&target);
+    if deno_compile_target != target {
+        warn(format!(
+            "Deno cannot compile a native Windows ARM64 executable; building the bgutil POT provider for {deno_compile_target} to run under Windows emulation."
+        ));
+    }
 
     let expected_sidecar = manifest_dir
         .join("binaries")
@@ -806,8 +851,9 @@ fn stage_bgutil_pot_provider_sidecar() {
     let build_stamp_path = manifest_dir.join("binaries").join(format!(
         "{BGUTIL_POT_PROVIDER_SIDECAR_NAME}-{target}.build-stamp"
     ));
-    let expected_build_stamp =
-        format!("{BGUTIL_POT_PROVIDER_BUILD_RECIPE}:{DENO_VERSION}:{target}\n");
+    let expected_build_stamp = format!(
+        "{BGUTIL_POT_PROVIDER_BUILD_RECIPE}:{DENO_VERSION}:{target}:{deno_compile_target}\n"
+    );
     let sidecar_is_current = expected_sidecar.is_file()
         && fs::read_to_string(&build_stamp_path).is_ok_and(|stamp| stamp == expected_build_stamp)
         && !is_source_newer_than(&server_dir.join("package.json"), &expected_sidecar)
@@ -821,7 +867,7 @@ fn stage_bgutil_pot_provider_sidecar() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
     let build_dir = prepare_bgutil_build_directory(&server_dir, &out_dir);
     install_bgutil_dependencies(&build_dir, &out_dir);
-    let built_binary = compile_bgutil_sidecar(&manifest_dir, &build_dir, &target);
+    let built_binary = compile_bgutil_sidecar(&manifest_dir, &build_dir, deno_compile_target);
 
     fs::create_dir_all(
         expected_sidecar
@@ -880,7 +926,15 @@ fn prepare_bgutil_build_directory(server_dir: &Path, out_dir: &Path) -> PathBuf 
 fn install_bgutil_dependencies(build_dir: &Path, out_dir: &Path) {
     let npm_cache_dir = out_dir.join("npm-cache");
     let npm_status = Command::new(npm_executable())
-        .args(["ci", "--omit=dev", "--no-audit", "--no-fund"])
+        // canvas is an unused optional jsdom integration, and it has no Windows ARM64 prebuild.
+        // Skipping dependency lifecycle scripts prevents npm from attempting a Cairo source build.
+        .args([
+            "ci",
+            "--omit=dev",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+        ])
         .env("npm_config_cache", npm_cache_dir)
         .current_dir(build_dir)
         .status()
@@ -939,6 +993,20 @@ fn compile_bgutil_sidecar(manifest_dir: &Path, build_dir: &Path, target: &str) -
     );
 
     built_binary
+}
+
+fn bgutil_deno_compile_target(target: &str) -> &str {
+    match target {
+        // Deno ships a Windows ARM64 CLI, but deno compile does not ship a matching denort.
+        // Windows 11 ARM runs the resulting x64 provider through its x64 emulation layer.
+        "aarch64-pc-windows-msvc" => "x86_64-pc-windows-msvc",
+        "aarch64-apple-darwin"
+        | "aarch64-unknown-linux-gnu"
+        | "x86_64-apple-darwin"
+        | "x86_64-pc-windows-msvc"
+        | "x86_64-unknown-linux-gnu" => target,
+        unsupported => panic!("Deno compilation is not configured for target {unsupported}"),
+    }
 }
 
 fn prepare_pot_provider_plugin_resource() {
