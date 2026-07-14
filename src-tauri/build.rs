@@ -28,6 +28,7 @@ const FFMPEG_BUILDS_RELEASE_BASE_URL: &str =
     "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download";
 const FFMPEG_BUILDS_CHECKSUMS: &str = "checksums.sha256";
 const BGUTIL_POT_PROVIDER_SIDECAR_NAME: &str = "bgutil-pot";
+const BGUTIL_POT_PROVIDER_BUILD_RECIPE: &str = "deno-compile-v1";
 const DENO_SIDECAR_NAME: &str = "deno";
 const FFMPEG_SIDECAR_NAME: &str = "ffmpeg";
 const FFPROBE_SIDECAR_NAME: &str = "ffprobe";
@@ -134,9 +135,11 @@ fn configure_build_tracking() {
     println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.Shared");
     println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.UI.Linux");
     println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.UI.Win");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider-rs/Cargo.toml");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider-rs/src");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider-rs/plugin/yt_dlp_plugins");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/package.json");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/package-lock.json");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/src");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/plugin/pyproject.toml");
+    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/plugin/yt_dlp_plugins");
 }
 
 fn stage_yt_dlp_sidecar() {
@@ -487,54 +490,49 @@ fn stage_bgutil_pot_provider_sidecar() {
         warn("Could not resolve workspace root; skipping bgutil POT provider sidecar build.");
         return;
     };
-    let provider_dir = workspace_root.join("bgutil-ytdlp-pot-provider-rs");
+    let provider_dir = workspace_root.join("bgutil-ytdlp-pot-provider");
+    let server_dir = provider_dir.join("server");
 
-    if !provider_dir.join("Cargo.toml").is_file() {
+    if !server_dir.join("package.json").is_file()
+        || !server_dir.join("package-lock.json").is_file()
+        || !server_dir.join("src/main.ts").is_file()
+    {
         warn(format!(
-            "bgutil-ytdlp-pot-provider-rs submodule is missing at {}; skipping POT provider sidecar build.",
-            provider_dir.display()
+            "bgutil-ytdlp-pot-provider server sources are missing at {}; skipping POT provider sidecar build.",
+            server_dir.display()
         ));
         return;
     }
 
     let target = build_target_triple();
+    let host = env::var("HOST").unwrap_or_else(|_| host_target_triple().to_string());
+    assert_eq!(
+        target, host,
+        "bgutil POT provider sidecar must be built natively because canvas contains a target-specific native addon (host: {host}, target: {target})"
+    );
+
     let expected_sidecar = manifest_dir
         .join("binaries")
         .join(sidecar_file_name_for_host(BGUTIL_POT_PROVIDER_SIDECAR_NAME));
-    let built_binary = provider_dir
-        .join("target")
-        .join(&target)
-        .join("release")
-        .join(executable_name(BGUTIL_POT_PROVIDER_SIDECAR_NAME));
+    let build_stamp_path = manifest_dir.join("binaries").join(format!(
+        "{BGUTIL_POT_PROVIDER_SIDECAR_NAME}-{target}.build-stamp"
+    ));
+    let expected_build_stamp =
+        format!("{BGUTIL_POT_PROVIDER_BUILD_RECIPE}:{DENO_VERSION}:{target}\n");
+    let sidecar_is_current = expected_sidecar.is_file()
+        && fs::read_to_string(&build_stamp_path).is_ok_and(|stamp| stamp == expected_build_stamp)
+        && !is_source_newer_than(&server_dir.join("package.json"), &expected_sidecar)
+        && !is_source_newer_than(&server_dir.join("package-lock.json"), &expected_sidecar)
+        && !is_source_newer_than(&server_dir.join("src"), &expected_sidecar);
 
-    if !built_binary.is_file()
-        || is_source_newer_than(&provider_dir.join("Cargo.toml"), &built_binary)
-        || is_source_newer_than(&provider_dir.join("src"), &built_binary)
-    {
-        let status = Command::new("cargo")
-            .args([
-                "build",
-                "--release",
-                "--locked",
-                "--bin",
-                BGUTIL_POT_PROVIDER_SIDECAR_NAME,
-                "--target",
-                &target,
-            ])
-            .current_dir(&provider_dir)
-            .status()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "failed to start cargo while building bgutil POT provider sidecar from {}: {error}",
-                    provider_dir.display()
-                )
-            });
-
-        assert!(
-            status.success(),
-            "cargo failed while building bgutil POT provider sidecar with status {status}"
-        );
+    if sidecar_is_current {
+        return;
     }
+
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
+    let build_dir = prepare_bgutil_build_directory(&server_dir, &out_dir);
+    install_bgutil_dependencies(&build_dir, &out_dir);
+    let built_binary = compile_bgutil_sidecar(&manifest_dir, &build_dir, &target);
 
     fs::create_dir_all(
         expected_sidecar
@@ -557,6 +555,101 @@ fn stage_bgutil_pot_provider_sidecar() {
         fs::set_permissions(&expected_sidecar, fs::Permissions::from_mode(0o755))
             .expect("failed to mark bgutil POT provider sidecar executable");
     }
+
+    fs::write(&build_stamp_path, expected_build_stamp).unwrap_or_else(|error| {
+        panic!(
+            "failed to write bgutil POT provider build stamp at {}: {error}",
+            build_stamp_path.display()
+        )
+    });
+}
+
+fn prepare_bgutil_build_directory(server_dir: &Path, out_dir: &Path) -> PathBuf {
+    let build_dir = out_dir.join("bgutil-pot-provider");
+    if build_dir.exists() {
+        fs::remove_dir_all(&build_dir).unwrap_or_else(|error| {
+            panic!(
+                "failed to clear bgutil POT provider build directory at {}: {error}",
+                build_dir.display()
+            )
+        });
+    }
+
+    copy_file_if_exists(
+        &server_dir.join("package.json"),
+        &build_dir.join("package.json"),
+    );
+    copy_file_if_exists(
+        &server_dir.join("package-lock.json"),
+        &build_dir.join("package-lock.json"),
+    );
+    copy_directory(&server_dir.join("src"), &build_dir.join("src"));
+
+    build_dir
+}
+
+fn install_bgutil_dependencies(build_dir: &Path, out_dir: &Path) {
+    let npm_cache_dir = out_dir.join("npm-cache");
+    let npm_status = Command::new(npm_executable())
+        .args(["ci", "--omit=dev", "--no-audit", "--no-fund"])
+        .env("npm_config_cache", npm_cache_dir)
+        .current_dir(build_dir)
+        .status()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to start npm while installing bgutil POT provider dependencies in {}: {error}",
+                build_dir.display()
+            )
+        });
+    assert!(
+        npm_status.success(),
+        "npm ci failed while installing bgutil POT provider dependencies with status {npm_status}"
+    );
+}
+
+fn compile_bgutil_sidecar(manifest_dir: &Path, build_dir: &Path, target: &str) -> PathBuf {
+    let deno_sidecar = manifest_dir
+        .join("binaries")
+        .join(sidecar_file_name_for_host(DENO_SIDECAR_NAME));
+    assert!(
+        deno_sidecar.is_file(),
+        "Deno sidecar is missing at {}; it must be staged before building the bgutil POT provider",
+        deno_sidecar.display()
+    );
+
+    let built_binary = build_dir.join(executable_name(BGUTIL_POT_PROVIDER_SIDECAR_NAME));
+    let deno_status = Command::new(&deno_sidecar)
+        .args([
+            "compile",
+            "--no-check",
+            "--no-lock",
+            "--node-modules-dir=manual",
+            "--self-extracting",
+            "--allow-env",
+            "--allow-net",
+            "--allow-read",
+            "--allow-sys",
+            "--allow-ffi",
+            "--target",
+            target,
+            "--output",
+        ])
+        .arg(&built_binary)
+        .arg("src/main.ts")
+        .current_dir(build_dir)
+        .status()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to start Deno while compiling bgutil POT provider from {}: {error}",
+                build_dir.display()
+            )
+        });
+    assert!(
+        deno_status.success(),
+        "Deno failed while compiling bgutil POT provider with status {deno_status}"
+    );
+
+    built_binary
 }
 
 fn prepare_pot_provider_plugin_resource() {
@@ -566,12 +659,12 @@ fn prepare_pot_provider_plugin_resource() {
         return;
     };
     let source_plugin = workspace_root
-        .join("bgutil-ytdlp-pot-provider-rs")
+        .join("bgutil-ytdlp-pot-provider")
         .join("plugin");
 
     if !source_plugin.join("yt_dlp_plugins").is_dir() {
         warn(format!(
-            "bgutil-ytdlp-pot-provider-rs plugin is missing at {}; skipping yt-dlp plugin resource preparation.",
+            "bgutil-ytdlp-pot-provider plugin is missing at {}; skipping yt-dlp plugin resource preparation.",
             source_plugin.display()
         ));
         return;
@@ -707,6 +800,18 @@ fn executable_name(name: &str) -> String {
     #[cfg(not(target_os = "windows"))]
     {
         name.to_string()
+    }
+}
+
+fn npm_executable() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "npm.cmd"
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        "npm"
     }
 }
 

@@ -1,6 +1,6 @@
 [submodule "YTSubConverter"]
 	path = YTSubConverter
 	url = https://github.com/arcusmaximus/YTSubConverter
-[submodule "bgutil-ytdlp-pot-provider-rs"]
-	path = bgutil-ytdlp-pot-provider-rs
-	url = https://github.com/VinVel/bgutil-ytdlp-pot-provider-rs
+[submodule "bgutil-ytdlp-pot-provider"]
+	path = bgutil-ytdlp-pot-provider
+	url = https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git

@@ -184,7 +184,7 @@ Get-AuthenticodeSignature -FilePath .\Quiver_x.y.z-setup.exe
 ```
 
 Quiver makes use of 6 (on macOS 4) individual sidecars each with their own license (I linked the repo from where i get either the source code in the case of building them from source, or where I got the binaries from the release pipelines):
- - [bgutil-ytdlp-pot-provider-rs](https://github.com/VinVel/bgutil-ytdlp-pot-provider-rs):  GPL-3.0 license
+ - [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git):  GPL-3.0 license
  - [Deno](https://github.com/denoland/deno/): MIT License
  - [ffmpeg and ffprobe](https://github.com/yt-dlp/FFmpeg-Builds): The Build Scripts are MIT License, but the compiled binary is made up of LGPL 2.1+ and GPL 3.0 code
  - [yt-dlp](https://github.com/yt-dlp/yt-dlp): Unlicense license
