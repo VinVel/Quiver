@@ -524,6 +524,7 @@ fn stage_yt_sub_converter_sidecar() {
         .join(sidecar_file_name_for_host(YT_SUB_CONVERTER_SIDECAR_NAME));
 
     if expected_sidecar.is_file() {
+        mark_sidecar_executable(&expected_sidecar);
         return;
     }
 
@@ -574,13 +575,24 @@ fn stage_yt_sub_converter_sidecar() {
         );
     });
 
+    mark_sidecar_executable(&expected_sidecar);
+}
+
+fn mark_sidecar_executable(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
-        fs::set_permissions(&expected_sidecar, fs::Permissions::from_mode(0o755))
-            .expect("failed to mark YTSubConverter sidecar executable");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap_or_else(|error| {
+            panic!(
+                "failed to mark YTSubConverter sidecar executable at {}: {error}",
+                path.display()
+            )
+        });
     }
+
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 #[cfg(target_os = "windows")]

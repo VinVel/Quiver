@@ -7,3 +7,6 @@
 [submodule "yt-dlp"]
 	path = yt-dlp
 	url = https://github.com/yt-dlp/yt-dlp.git
+[submodule "src/components"]
+	path = src/components
+	url = https://github.com/VinVel/Common-UI.git

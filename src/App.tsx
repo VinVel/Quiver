@@ -37,13 +37,11 @@ import {
   ToolbarField,
   Toggle,
   Typography,
-} from "./components/ui";
-import { useTheme } from "./context/ThemeContext";
-import {
+  useTheme,
   themePalettes,
   themePresetDetails,
   type ThemePresetName,
-} from "./themes/colorpalette";
+} from "./components";
 import "./App.css";
 
 type PresetSource = "youTube" | "general";

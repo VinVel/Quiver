@@ -12,7 +12,6 @@ use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
 };
 
-const POT_SERVER_HOST: &str = "127.0.0.1";
 const POT_SERVER_PORT: u16 = 4416;
 const POT_SERVER_PORT_TEXT: &str = "4416";
 
@@ -75,13 +74,7 @@ fn spawn_pot_server(app: &AppHandle) -> Result<CommandChild, PotServerError> {
         .shell()
         .sidecar("bgutil-pot")
         .map_err(|error| PotServerError::SpawnFailed(error.to_string()))?
-        .args([
-            "server",
-            "--host",
-            POT_SERVER_HOST,
-            "--port",
-            POT_SERVER_PORT_TEXT,
-        ])
+        .args(["--port", POT_SERVER_PORT_TEXT])
         .spawn()
         .map_err(|error| PotServerError::SpawnFailed(error.to_string()))?;
 
