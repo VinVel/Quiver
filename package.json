@@ -15,20 +15,20 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-dialog": "~2.7.1",
+    "@tauri-apps/plugin-dialog": "~2.7.2",
     "@tauri-apps/plugin-opener": "~2.5.4",
     "@tauri-apps/plugin-os": "^2.3.2",
     "@tauri-apps/plugin-updater": "~2.10.1",
-    "lucide-react": "^1.24.0",
+    "lucide-react": "^1.28.0",
     "overlayscrollbars": "^2.16.0",
     "overlayscrollbars-react": "^0.5.6",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.7.0",
     "typescript": "~5.8.3",
     "vite": "^7.3.6"
