@@ -16,7 +16,6 @@ const FFMPEG_BUILDS_RELEASE_BASE_URL: &str =
     "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download";
 const FFMPEG_BUILDS_CHECKSUMS: &str = "checksums.sha256";
 const BGUTIL_POT_PROVIDER_SIDECAR_NAME: &str = "bgutil-pot";
-const BGUTIL_POT_PROVIDER_BUILD_RECIPE: &str = "deno-compile-windows-arm64-x64-v3";
 const DENO_SIDECAR_NAME: &str = "deno";
 const FFMPEG_SIDECAR_NAME: &str = "ffmpeg";
 const FFPROBE_SIDECAR_NAME: &str = "ffprobe";
@@ -851,12 +850,6 @@ fn stage_bgutil_pot_provider_sidecar() {
         target, host,
         "bgutil POT provider sidecar must be built natively because the build executes the target-specific Deno runtime (host: {host}, target: {target})"
     );
-    let deno_compile_target = bgutil_deno_compile_target(&target);
-    if deno_compile_target != target {
-        warn(format!(
-            "Deno cannot compile a native Windows ARM64 executable; building the bgutil POT provider for {deno_compile_target} to run under Windows emulation."
-        ));
-    }
 
     let expected_sidecar = manifest_dir
         .join("binaries")
@@ -864,9 +857,7 @@ fn stage_bgutil_pot_provider_sidecar() {
     let build_stamp_path = manifest_dir.join("binaries").join(format!(
         "{BGUTIL_POT_PROVIDER_SIDECAR_NAME}-{target}.build-stamp"
     ));
-    let expected_build_stamp = format!(
-        "{BGUTIL_POT_PROVIDER_BUILD_RECIPE}:{DENO_VERSION}:{target}:{deno_compile_target}\n"
-    );
+    let expected_build_stamp = format!("{DENO_VERSION}:{target}\n");
     let sidecar_is_current = expected_sidecar.is_file()
         && fs::read_to_string(&build_stamp_path).is_ok_and(|stamp| stamp == expected_build_stamp)
         && !is_source_newer_than(&server_dir.join("package.json"), &expected_sidecar)
@@ -880,7 +871,7 @@ fn stage_bgutil_pot_provider_sidecar() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
     let build_dir = prepare_bgutil_build_directory(&server_dir, &out_dir);
     install_bgutil_dependencies(&build_dir, &out_dir);
-    let built_binary = compile_bgutil_sidecar(&manifest_dir, &build_dir, deno_compile_target);
+    let built_binary = compile_bgutil_sidecar(&manifest_dir, &build_dir, &target);
 
     fs::create_dir_all(
         expected_sidecar
@@ -1006,20 +997,6 @@ fn compile_bgutil_sidecar(manifest_dir: &Path, build_dir: &Path, target: &str) -
     );
 
     built_binary
-}
-
-fn bgutil_deno_compile_target(target: &str) -> &str {
-    match target {
-        // Deno ships a Windows ARM64 CLI, but deno compile does not ship a matching denort.
-        // Windows 11 ARM runs the resulting x64 provider through its x64 emulation layer.
-        "aarch64-pc-windows-msvc" => "x86_64-pc-windows-msvc",
-        "aarch64-apple-darwin"
-        | "aarch64-unknown-linux-gnu"
-        | "x86_64-apple-darwin"
-        | "x86_64-pc-windows-msvc"
-        | "x86_64-unknown-linux-gnu" => target,
-        unsupported => panic!("Deno compilation is not configured for target {unsupported}"),
-    }
 }
 
 fn prepare_pot_provider_plugin_resource() {
