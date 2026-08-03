@@ -770,6 +770,7 @@ fn yt_sub_converter_runtime_identifier(target: &str) -> &'static str {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_dotnet<const N: usize>(working_directory: &Path, args: [&str; N]) {
     let status = Command::new("dotnet")
+        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
         .args(args)
         .current_dir(working_directory)
         .status()
