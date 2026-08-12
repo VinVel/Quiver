@@ -58,6 +58,17 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
+      - name: Install uv for yt-dlp source build
+        if: ${{ runner.os != 'Linux' }}
+        uses: astral-sh/setup-uv@main
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-python: true
+          cache-dependency-glob: |
+            yt-dlp/pyproject.toml
+            yt-dlp/bundle/requirements/*.txt
+
       - name: Install Rust toolchain and targets
         uses: dtolnay/rust-toolchain@master
         with:
