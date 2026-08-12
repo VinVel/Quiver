@@ -1,6 +1,5 @@
 {
   "bundle": {
-    "targets": ["deb", "rpm"],
     "externalBin": [
       "binaries/deno",
       "binaries/bgutil-pot",
