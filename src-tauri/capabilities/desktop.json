@@ -7,8 +7,5 @@
   ],
   "windows": [
     "main"
-  ],
-  "permissions": [
-    "updater:default"
   ]
 }

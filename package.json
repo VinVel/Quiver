@@ -18,7 +18,6 @@
     "@tauri-apps/plugin-dialog": "~2.7.2",
     "@tauri-apps/plugin-opener": "~2.5.4",
     "@tauri-apps/plugin-os": "^2.3.2",
-    "@tauri-apps/plugin-updater": "~2.10.1",
     "lucide-react": "^1.28.0",
     "overlayscrollbars": "^2.16.0",
     "overlayscrollbars-react": "^0.5.6",
