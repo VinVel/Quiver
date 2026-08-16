@@ -62,14 +62,46 @@ brew install ffmpeg
 
 ### Linux
 
-Use the package for your distribution from the latest release:
-
+#### Debian/Ubuntu/Linux Mint
 ```sh
-sudo apt install ./quiver_*.deb
+# Optional: verify the key fingerprint before importing: DDF1 A281 1825 3046 6AFD 1932 34C7 5D10 6D16 DFB0
+curl -fsSL https://packages.velcore.net/VinVel/Quiver/public.key | gpg --show-keys
+
+# Import the signing key
+curl -fsSL https://packages.velcore.net/VinVel/Quiver/public.key | sudo gpg --dearmor -o /etc/apt/keyrings/Quiver.gpg
+
+# Add the repository
+sudo tee /etc/apt/sources.list.d/Quiver.sources << EOF
+Types: deb
+URIs: https://packages.velcore.net/VinVel/Quiver
+Suites: stable
+Components: main
+Signed-By: /etc/apt/keyrings/Quiver.gpg
+EOF
+# To include Releases marked as Pre-Release, change the URL to
+# https://packages.velcore.net/VinVel/Quiver/prerelease
+
+# Install
+sudo apt update && sudo apt install quiver
 ```
 
+#### Fedora/Nobara/Ultramarine Linux
+
 ```sh
-sudo dnf install ./quiver-*.rpm
+sudo tee /etc/yum.repos.d/Quiver.repo << EOF
+[Quiver]
+name=Quiver
+baseurl=https://packages.velcore.net/VinVel/Quiver
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://packages.velcore.net/VinVel/Quiver/public.key
+EOF
+# To include Releases marked as Pre-Release, change the URL to
+# https://packages.velcore.net/VinVel/Quiver/prerelease
+
+sudo dnf install quiver
+# Optional: verify the key fingerprint on first update/install: DDF1 A281 1825 3046 6AFD 1932 34C7 5D10 6D16 DFB0
 ```
 
 ## Advanced Subtitle Pipeline
