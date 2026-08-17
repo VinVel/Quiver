@@ -113,9 +113,9 @@ The Advanced Subtitle Pipeline is optional and only applies to YouTube video pre
 Since this is a Tauri project, it is advisable to first checkout the [Tauri prerequisites](https://tauri.app/start/prerequisites/).
 
 Other prerequisites: 
- - [uv (Windows/MacOS)](https://docs.astral.sh/uv/getting-started/installation/)
+ - [uv](https://docs.astral.sh/uv/getting-started/installation/)
  - [pnpm](https://pnpm.io/installation)
- - [.NET 8 (Linux/MacOS)](https://dotnet.microsoft.com/en-us/learn/dotnet/hello-world-tutorial/install)
+ - [.NET 8 (Linux/MacOS)](https://dotnet.microsoft.com/en-us/download/dotnet/8.0)
 
 This repo contains submodules, therefore you should clone the repo with the following command:
 
