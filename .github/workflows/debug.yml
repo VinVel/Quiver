@@ -135,6 +135,9 @@ jobs:
           TAURI_SIGNING_RPM_KEY_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           # Ad hoc signing identity
           APPLE_SIGNING_IDENTITY: '-'
+          # Updater Signing
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # Appimage
           SIGN: 1
           SIGN_KEY: ${{ secrets.GPG_PRIVATE_KEY_ID}}

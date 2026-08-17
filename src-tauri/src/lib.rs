@@ -8,6 +8,7 @@ use presets::{DownloadPreset, DownloadPresetInput, PresetCommandPreview, PresetI
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{Emitter, Manager};
+use tauri_plugin_updater::UpdaterExt;
 use yt_dlp::{YtDlpCommandOutput, YtDlpOutputStream, YtDlpRunner};
 
 const THEME_SETTINGS_FILE_NAME: &str = "theme-settings.json";
@@ -16,6 +17,29 @@ const DEFAULT_THEME_MODE: &str = "system";
 const DEFAULT_THEME_PRESET: &str = "crystal";
 const DEFAULT_DOWNLOAD_DIRECTORY: &str = "~/Downloads";
 const DEFAULT_COOKIES_PATH: &str = "~/Downloads/cookies.txt";
+
+async fn update(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
+    if let Some(update) = app.updater()?.check().await? {
+        let mut downloaded = 0;
+
+        update
+            .download_and_install(
+                |chunk_length, content_length| {
+                    downloaded += chunk_length;
+                    println!("downloaded {downloaded} from {content_length:?}");
+                },
+                || {
+                    println!("download finished");
+                },
+            )
+            .await?;
+
+        println!("update installed");
+        app.restart();
+    }
+
+    Ok(())
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -431,6 +455,14 @@ fn stop_pot_server(app: &tauri::AppHandle) {
 /// Panics if Tauri fails to initialize or run the application.
 pub fn run() {
     let mut builder = tauri::Builder::default()
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                update(handle).await.unwrap();
+            });
+            Ok(())
+        })
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
 
