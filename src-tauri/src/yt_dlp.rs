@@ -12,6 +12,7 @@ use std::{
 };
 
 use tauri::AppHandle;
+#[cfg(not(target_os = "linux"))]
 use tauri_plugin_shell::{ShellExt, process::CommandEvent};
 
 const YT_DLP_BINARY_ENV: &str = "QUIVER_YT_DLP_BINARY";
@@ -67,6 +68,7 @@ pub struct YtDlpRunner {
 
 enum YtDlpCommand {
     Override(PathBuf),
+    #[cfg(not(target_os = "linux"))]
     Sidecar(AppHandle),
 }
 
@@ -91,12 +93,31 @@ impl YtDlpRunner {
             return Err(YtDlpError::MissingBinary(vec![path]));
         }
 
-        if cfg!(target_os = "linux") {
+        #[cfg(target_os = "linux")]
+        {
+            drop(app);
+
+            let command = if is_appimage_runtime() {
+                let bundled_path = current_exe_sidecar_path(YT_DLP_BINARY_NAME)
+                    .unwrap_or_else(|| PathBuf::from(executable_name(YT_DLP_BINARY_NAME)));
+
+                if !bundled_path.is_file() {
+                    return Err(YtDlpError::MissingBinary(vec![bundled_path]));
+                }
+
+                YtDlpCommand::Override(bundled_path)
+            } else {
+                YtDlpCommand::Override(YT_DLP_BINARY_NAME.into())
+            };
+
             Ok(Self {
-                command: YtDlpCommand::Override(YT_DLP_BINARY_NAME.into()),
+                command,
                 plugin_dirs: Vec::new(),
             })
-        } else {
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
             Ok(Self {
                 command: YtDlpCommand::Sidecar(app),
                 plugin_dirs: Vec::new(),
@@ -118,6 +139,7 @@ impl YtDlpRunner {
                     .await
                     .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?
             }
+            #[cfg(not(target_os = "linux"))]
             YtDlpCommand::Sidecar(app) => {
                 let output = app
                     .shell()
@@ -160,6 +182,7 @@ impl YtDlpRunner {
                 .await
                 .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?
             }
+            #[cfg(not(target_os = "linux"))]
             YtDlpCommand::Sidecar(app) => run_sidecar_streaming(app, args, on_chunk).await,
         }
     }
@@ -222,9 +245,14 @@ fn bundled_deno_path() -> Option<PathBuf> {
 }
 
 pub fn bundled_ffmpeg_location() -> Option<PathBuf> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     {
         None
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        linux_appimage_tool_dir([FFMPEG_BINARY_NAME, FFPROBE_BINARY_NAME])
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -242,9 +270,14 @@ pub fn ffprobe_path() -> PathBuf {
 }
 
 fn bundled_ffmpeg_path() -> Option<PathBuf> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     {
         None
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        linux_appimage_tool_path(FFMPEG_BINARY_NAME)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -254,9 +287,14 @@ fn bundled_ffmpeg_path() -> Option<PathBuf> {
 }
 
 fn bundled_ffprobe_path() -> Option<PathBuf> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     {
         None
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        linux_appimage_tool_path(FFPROBE_BINARY_NAME)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -272,7 +310,25 @@ fn bundled_tool_path(name: &str) -> Option<PathBuf> {
         .or_else(|| workspace_binaries_sidecar_path(name))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(target_os = "linux")]
+fn linux_appimage_tool_path(name: &str) -> Option<PathBuf> {
+    is_appimage_runtime()
+        .then(|| current_exe_sidecar_path(name).filter(|path| path.is_file()))
+        .flatten()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_appimage_tool_dir<const N: usize>(names: [&str; N]) -> Option<PathBuf> {
+    is_appimage_runtime()
+        .then(|| current_exe_sidecar_dir_with_tools(names))
+        .flatten()
+}
+
+#[cfg(target_os = "linux")]
+fn is_appimage_runtime() -> bool {
+    env::var_os("APPIMAGE").is_some() || env::var_os("APPDIR").is_some()
+}
+
 fn current_exe_sidecar_dir_with_tools<const N: usize>(names: [&str; N]) -> Option<PathBuf> {
     let current_exe = env::current_exe().ok()?;
     let sidecar_dir = current_exe.parent()?.to_path_buf();
@@ -280,7 +336,6 @@ fn current_exe_sidecar_dir_with_tools<const N: usize>(names: [&str; N]) -> Optio
     sidecar_dir_contains_tools(&sidecar_dir, names).then_some(sidecar_dir)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sidecar_dir_contains_tools<const N: usize>(directory: &Path, names: [&str; N]) -> bool {
     names
         .into_iter()
@@ -389,6 +444,7 @@ where
     })
 }
 
+#[cfg(not(target_os = "linux"))]
 async fn run_sidecar_streaming<F>(
     app: &AppHandle,
     args: Vec<String>,
@@ -523,7 +579,7 @@ fn executable_extension() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{YtDlpCommand, YtDlpRunner, workspace_root};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     impl YtDlpRunner {
         fn from_path_for_test(binary_path: PathBuf) -> Self {
@@ -533,7 +589,15 @@ mod tests {
             }
         }
 
-        fn binary_path(&self) -> Option<&std::path::Path> {
+        #[cfg(target_os = "linux")]
+        fn binary_path(&self) -> &Path {
+            match &self.command {
+                YtDlpCommand::Override(path) => path,
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        fn binary_path(&self) -> Option<&Path> {
             match &self.command {
                 YtDlpCommand::Override(path) => Some(path),
                 YtDlpCommand::Sidecar(_) => None,
@@ -552,6 +616,10 @@ mod tests {
     fn runner_exposes_binary_path() {
         let runner = YtDlpRunner::from_path_for_test(PathBuf::from("yt-dlp"));
 
+        #[cfg(target_os = "linux")]
+        assert!(runner.binary_path().ends_with("yt-dlp"));
+
+        #[cfg(not(target_os = "linux"))]
         assert!(
             runner
                 .binary_path()

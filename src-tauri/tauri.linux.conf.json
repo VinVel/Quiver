@@ -6,6 +6,13 @@
       "binaries/ytsubconverter"
     ],
     "linux": {
+      "appimage": {
+        "files": {
+          "/usr/bin/ffmpeg": "binaries/appimage/ffmpeg",
+          "/usr/bin/ffprobe": "binaries/appimage/ffprobe",
+          "/usr/bin/yt-dlp": "binaries/appimage/yt-dlp"
+        }
+      },
       "deb": {
         "depends": ["ffmpeg", "yt-dlp"]
       },

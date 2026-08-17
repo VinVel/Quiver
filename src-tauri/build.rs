@@ -29,6 +29,7 @@ fn main() {
     stage_deno_sidecar();
     stage_ffmpeg_sidecars();
     stage_bgutil_pot_provider_sidecar();
+    prepare_linux_appimage_binary_files();
     prepare_pot_provider_plugin_resource();
     stop_running_copied_sidecars();
 
@@ -47,33 +48,36 @@ fn main() {
     tauri_build::try_build(attributes).expect("failed to build Tauri application metadata");
 }
 
-#[cfg(windows)]
 fn stop_running_copied_sidecars() {
-    let Some(target_profile_dir) = target_profile_dir() else {
-        warn("Could not resolve Cargo target profile directory; skipping copied sidecar cleanup.");
-        return;
-    };
+    #[cfg(windows)]
+    {
+        let Some(target_profile_dir) = target_profile_dir() else {
+            warn(
+                "Could not resolve Cargo target profile directory; skipping copied sidecar cleanup.",
+            );
+            return;
+        };
 
-    let sidecars = [
-        target_profile_dir.join(executable_name(BGUTIL_POT_PROVIDER_SIDECAR_NAME)),
-        target_profile_dir.join(executable_name(DENO_SIDECAR_NAME)),
-        target_profile_dir.join(executable_name(FFMPEG_SIDECAR_NAME)),
-        target_profile_dir.join(executable_name(FFPROBE_SIDECAR_NAME)),
-        target_profile_dir.join(executable_name(YT_DLP_SIDECAR_NAME)),
-        target_profile_dir.join(executable_name(YT_SUB_CONVERTER_SIDECAR_NAME)),
-    ];
-    let running_sidecars = sidecars
-        .iter()
-        .filter(|path| path.is_file())
-        .map(|path| path_to_str(path))
-        .collect::<Vec<_>>();
+        let sidecars = [
+            target_profile_dir.join(executable_name(BGUTIL_POT_PROVIDER_SIDECAR_NAME)),
+            target_profile_dir.join(executable_name(DENO_SIDECAR_NAME)),
+            target_profile_dir.join(executable_name(FFMPEG_SIDECAR_NAME)),
+            target_profile_dir.join(executable_name(FFPROBE_SIDECAR_NAME)),
+            target_profile_dir.join(executable_name(YT_DLP_SIDECAR_NAME)),
+            target_profile_dir.join(executable_name(YT_SUB_CONVERTER_SIDECAR_NAME)),
+        ];
+        let running_sidecars = sidecars
+            .iter()
+            .filter(|path| path.is_file())
+            .map(|path| path_to_str(path))
+            .collect::<Vec<_>>();
 
-    if running_sidecars.is_empty() {
-        return;
-    }
+        if running_sidecars.is_empty() {
+            return;
+        }
 
-    let sidecar_paths = running_sidecars.join("|");
-    let script = r#"
+        let sidecar_paths = running_sidecars.join("|");
+        let script = r#"
 $paths = @($env:QUIVER_COPIED_SIDECARS -split '\|' | ForEach-Object {
     [System.IO.Path]::GetFullPath($_).ToLowerInvariant()
 })
@@ -87,26 +91,24 @@ Get-CimInstance Win32_Process |
         Stop-Process -Id $_.ProcessId -Force
     }
 "#;
-    let status = Command::new("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ])
-        .env("QUIVER_COPIED_SIDECARS", sidecar_paths)
-        .status()
-        .expect("failed to start PowerShell while checking copied sidecar processes");
+        let status = Command::new("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ])
+            .env("QUIVER_COPIED_SIDECARS", sidecar_paths)
+            .status()
+            .expect("failed to start PowerShell while checking copied sidecar processes");
 
-    assert!(
-        status.success(),
-        "PowerShell failed while checking copied sidecar processes with status {status}"
-    );
+        assert!(
+            status.success(),
+            "PowerShell failed while checking copied sidecar processes with status {status}"
+        );
+    }
 }
-
-#[cfg(not(windows))]
-fn stop_running_copied_sidecars() {}
 
 fn target_profile_dir() -> Option<PathBuf> {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR")?);
@@ -135,10 +137,6 @@ fn configure_build_tracking() {
 }
 
 fn stage_yt_dlp_sidecar() {
-    if !cfg!(any(target_os = "windows", target_os = "macos")) {
-        return;
-    }
-
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
         .parent()
@@ -171,6 +169,7 @@ fn stage_yt_dlp_sidecar() {
     if expected_sidecar.is_file()
         && fs::read_to_string(&build_stamp_path).is_ok_and(|stamp| stamp == expected_build_stamp)
     {
+        mark_sidecar_executable(&expected_sidecar);
         return;
     }
 
@@ -341,7 +340,9 @@ fn prepare_yt_dlp_build_environment(
 fn yt_dlp_python_request(target: &str) -> &'static str {
     match target {
         "aarch64-apple-darwin" => "cpython-3.12-macos-aarch64-none",
+        "aarch64-unknown-linux-gnu" => "cpython-3.12-linux-aarch64-gnu",
         "x86_64-apple-darwin" => "cpython-3.12-macos-x86_64-none",
+        "x86_64-unknown-linux-gnu" => "cpython-3.12-linux-x86_64-gnu",
         "aarch64-pc-windows-msvc" => "cpython-3.12-windows-aarch64-none",
         "x86_64-pc-windows-msvc" => "cpython-3.12-windows-x86_64-none",
         unsupported => panic!("yt-dlp Python is not configured for target {unsupported}"),
@@ -351,7 +352,8 @@ fn yt_dlp_python_request(target: &str) -> &'static str {
 fn verify_yt_dlp_python_architecture(build_dir: &Path, python: &Path, target: &str) {
     let expected_machine = match target {
         "aarch64-apple-darwin" | "aarch64-pc-windows-msvc" => "arm64",
-        "x86_64-apple-darwin" => "x86_64",
+        "aarch64-unknown-linux-gnu" => "aarch64",
+        "x86_64-apple-darwin" | "x86_64-unknown-linux-gnu" => "x86_64",
         "x86_64-pc-windows-msvc" => "amd64",
         unsupported => panic!("yt-dlp Python is not configured for target {unsupported}"),
     };
@@ -379,7 +381,10 @@ fn verify_yt_dlp_python_architecture(build_dir: &Path, python: &Path, target: &s
 
 fn yt_dlp_pyinstaller_requirements(target: &str) -> &'static str {
     match target {
-        "aarch64-apple-darwin" | "x86_64-apple-darwin" => "pyinstaller.txt",
+        "aarch64-apple-darwin"
+        | "aarch64-unknown-linux-gnu"
+        | "x86_64-apple-darwin"
+        | "x86_64-unknown-linux-gnu" => "pyinstaller.txt",
         "aarch64-pc-windows-msvc" => "win-arm64-pyinstaller.txt",
         "x86_64-pc-windows-msvc" => "win-x64-pyinstaller.txt",
         unsupported => panic!("yt-dlp source build is not configured for target {unsupported}"),
@@ -584,7 +589,7 @@ fn mark_sidecar_executable(path: &Path) {
 
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap_or_else(|error| {
             panic!(
-                "failed to mark YTSubConverter sidecar executable at {}: {error}",
+                "failed to mark sidecar executable at {}: {error}",
                 path.display()
             )
         });
@@ -1186,23 +1191,65 @@ fn stage_deno_sidecar() {
 }
 
 fn stage_ffmpeg_sidecars() {
-    if cfg!(any(target_os = "linux", target_os = "macos")) {
-        return;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let expected_ffmpeg = manifest_dir
+            .join("binaries")
+            .join(sidecar_file_name_for_host(FFMPEG_SIDECAR_NAME));
+        let expected_ffprobe = manifest_dir
+            .join("binaries")
+            .join(sidecar_file_name_for_host(FFPROBE_SIDECAR_NAME));
+
+        if expected_ffmpeg.is_file() && expected_ffprobe.is_file() {
+            mark_sidecar_executable(&expected_ffmpeg);
+            mark_sidecar_executable(&expected_ffprobe);
+            return;
+        }
+
+        stage_yt_dlp_ffmpeg_builds_sidecars(&expected_ffmpeg, &expected_ffprobe);
     }
+}
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let expected_ffmpeg = manifest_dir
-        .join("binaries")
-        .join(sidecar_file_name_for_host(FFMPEG_SIDECAR_NAME));
-    let expected_ffprobe = manifest_dir
-        .join("binaries")
-        .join(sidecar_file_name_for_host(FFPROBE_SIDECAR_NAME));
+fn prepare_linux_appimage_binary_files() {
+    #[cfg(target_os = "linux")]
+    {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let source_dir = manifest_dir.join("binaries");
+        let appimage_dir = source_dir.join("appimage");
 
-    if expected_ffmpeg.is_file() && expected_ffprobe.is_file() {
-        return;
+        fs::create_dir_all(&appimage_dir).unwrap_or_else(|error| {
+            panic!(
+                "failed to create AppImage binary payload directory at {}: {error}",
+                appimage_dir.display()
+            )
+        });
+
+        for binary_name in [
+            FFMPEG_SIDECAR_NAME,
+            FFPROBE_SIDECAR_NAME,
+            YT_DLP_SIDECAR_NAME,
+        ] {
+            let source = source_dir.join(sidecar_file_name_for_host(binary_name));
+            let destination = appimage_dir.join(executable_name(binary_name));
+
+            assert!(
+                source.is_file(),
+                "AppImage payload binary {} was not staged at {}",
+                binary_name,
+                source.display()
+            );
+
+            fs::copy(&source, &destination).unwrap_or_else(|error| {
+                panic!(
+                    "failed to copy AppImage payload binary from {} to {}: {error}",
+                    source.display(),
+                    destination.display()
+                )
+            });
+            mark_sidecar_executable(&destination);
+        }
     }
-
-    stage_yt_dlp_ffmpeg_builds_sidecars(&expected_ffmpeg, &expected_ffprobe);
 }
 
 fn stage_yt_dlp_ffmpeg_builds_sidecars(expected_ffmpeg: &Path, expected_ffprobe: &Path) {
