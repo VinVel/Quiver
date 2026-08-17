@@ -133,6 +133,16 @@ jobs:
           certutil -decode certificate/tempCert.txt certificate/certificate.pfx
           Remove-Item -path certificate -include tempCert.txt
           Import-PfxCertificate -FilePath certificate/certificate.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText)
+      
+      - name: Import GPG Key
+        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux arm64 GNU' }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_KEY_ID: ${{ secrets.GPG_PRIVATE_KEY_ID }}
+        run: |
+          install -m 700 -d ~/.gnupg
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --batch --list-secret-keys --keyid-format LONG "$GPG_KEY_ID"
 
       - name: Build Release Bundles
         uses: tauri-apps/tauri-action@v1
@@ -145,7 +155,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: '-'
           # Appimage
           SIGN: 1
-          SIGN_KEY: ${{ secrets.GPG_PRIVATE_KEY}}
+          SIGN_KEY: ${{ secrets.GPG_PRIVATE_KEY_ID}}
           APPIMAGETOOL_SIGN_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE}}
           APPIMAGETOOL_FORCE_SIGN: 1
           APPIMAGE_EXTRACT_AND_RUN: 1
