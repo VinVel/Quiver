@@ -25,42 +25,21 @@
     "createUpdaterArtifacts": true,
     "active": true,
     "targets": "all",
-    "externalBin": [
-      "binaries/deno",
-      "binaries/ffmpeg",
-      "binaries/ffprobe",
-      "binaries/bgutil-pot",
-      "binaries/yt-dlp",
-      "binaries/ytsubconverter"
-    ],
     "resources": [
       "resources/yt-dlp-plugins"
     ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
-    "windows": {
-      "certificateThumbprint": "B71B9844E95C0A735FF10EC52ADB293A5BC1AB0F",
-      "digestAlgorithm": "sha256",
-      "timestampUrl": "http://timestamp.comodoca.com",
-      "nsis": {
-        "installerIcon": "icons/icon.ico" 
-      }
-    }
+      "icons/128x128@2x.png"
+    ]
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE4MTEyM0I3Q0MzREVCNDQKUldSRTZ6M010eU1ScUZhWGo0MjJ5akJJa0pza0RJR3VLRW44RlE5c1lid2F2Q09IeFNQam5kT1UK",
       "endpoints": [
         "https://github.com/VinVel/Quiver/releases/latest/download/latest.json"
-      ],
-      "windows": {
-        "installMode": "passive"
-      }
+      ]
     }
   }
 }
