@@ -64,6 +64,7 @@ impl Error for YtDlpError {
 pub struct YtDlpRunner {
     command: YtDlpCommand,
     plugin_dirs: Vec<PathBuf>,
+    uses_bundled_yt_dlp: bool,
 }
 
 enum YtDlpCommand {
@@ -87,6 +88,7 @@ impl YtDlpRunner {
                 return Ok(Self {
                     command: YtDlpCommand::Override(path),
                     plugin_dirs: Vec::new(),
+                    uses_bundled_yt_dlp: false,
                 });
             }
 
@@ -97,7 +99,8 @@ impl YtDlpRunner {
         {
             drop(app);
 
-            let command = if is_appimage_runtime() {
+            let uses_bundled_yt_dlp = is_appimage_runtime();
+            let command = if uses_bundled_yt_dlp {
                 let bundled_path = current_exe_sidecar_path(YT_DLP_BINARY_NAME)
                     .unwrap_or_else(|| PathBuf::from(executable_name(YT_DLP_BINARY_NAME)));
 
@@ -109,10 +112,10 @@ impl YtDlpRunner {
             } else {
                 YtDlpCommand::Override(YT_DLP_BINARY_NAME.into())
             };
-
             Ok(Self {
                 command,
                 plugin_dirs: Vec::new(),
+                uses_bundled_yt_dlp,
             })
         }
 
@@ -121,6 +124,7 @@ impl YtDlpRunner {
             Ok(Self {
                 command: YtDlpCommand::Sidecar(app),
                 plugin_dirs: Vec::new(),
+                uses_bundled_yt_dlp: true,
             })
         }
     }
@@ -188,7 +192,9 @@ impl YtDlpRunner {
     }
 
     pub fn with_plugin_dirs(mut self, plugin_dirs: Vec<PathBuf>) -> Self {
-        self.plugin_dirs = plugin_dirs;
+        if self.uses_bundled_yt_dlp {
+            self.plugin_dirs = plugin_dirs;
+        }
         self
     }
 
@@ -538,6 +544,7 @@ fn workspace_root() -> Option<PathBuf> {
 pub fn candidate_plugin_dirs(resource_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
+    #[cfg(debug_assertions)]
     if let Some(workspace_root) = workspace_root() {
         paths.push(
             workspace_root
@@ -586,6 +593,15 @@ mod tests {
             Self {
                 command: YtDlpCommand::Override(binary_path),
                 plugin_dirs: Vec::new(),
+                uses_bundled_yt_dlp: false,
+            }
+        }
+
+        fn from_bundled_path_for_test(binary_path: PathBuf) -> Self {
+            Self {
+                command: YtDlpCommand::Override(binary_path),
+                plugin_dirs: Vec::new(),
+                uses_bundled_yt_dlp: true,
             }
         }
 
@@ -625,5 +641,29 @@ mod tests {
                 .binary_path()
                 .is_some_and(|path| path.ends_with("yt-dlp"))
         );
+    }
+
+    #[test]
+    fn system_yt_dlp_runner_ignores_bundled_plugin_dirs() {
+        let args = YtDlpRunner::from_path_for_test(PathBuf::from("yt-dlp"))
+            .with_plugin_dirs(vec![PathBuf::from(
+                "/usr/lib/Quiver/resources/yt-dlp-plugins",
+            )])
+            .command_args(["--version"]);
+
+        assert!(!args.iter().any(|arg| arg == "--plugin-dirs"));
+    }
+
+    #[test]
+    fn bundled_yt_dlp_runner_uses_bundled_plugin_dirs() {
+        let args = YtDlpRunner::from_bundled_path_for_test(PathBuf::from("yt-dlp"))
+            .with_plugin_dirs(vec![PathBuf::from(
+                "/usr/lib/Quiver/resources/yt-dlp-plugins",
+            )])
+            .command_args(["--version"]);
+
+        assert!(args.windows(2).any(|args| {
+            args[0] == "--plugin-dirs" && args[1] == "/usr/lib/Quiver/resources/yt-dlp-plugins"
+        }));
     }
 }
