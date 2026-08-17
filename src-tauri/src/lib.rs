@@ -8,6 +8,7 @@ use presets::{DownloadPreset, DownloadPresetInput, PresetCommandPreview, PresetI
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{Emitter, Manager};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri_plugin_updater::UpdaterExt;
 use yt_dlp::{YtDlpCommandOutput, YtDlpOutputStream, YtDlpRunner};
 
@@ -18,6 +19,7 @@ const DEFAULT_THEME_PRESET: &str = "crystal";
 const DEFAULT_DOWNLOAD_DIRECTORY: &str = "~/Downloads";
 const DEFAULT_COOKIES_PATH: &str = "~/Downloads/cookies.txt";
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn update(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
     if let Some(update) = app.updater()?.check().await? {
         let mut downloaded = 0;
@@ -455,16 +457,23 @@ fn stop_pot_server(app: &tauri::AppHandle) {
 /// Panics if Tauri fails to initialize or run the application.
 pub fn run() {
     let mut builder = tauri::Builder::default()
-        .setup(|app| {
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                update(handle).await.unwrap();
-            });
-            Ok(())
-        })
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        builder = builder
+            .setup(|app| {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = update(handle).await {
+                        eprintln!("failed to check for updates: {error}");
+                    }
+                });
+                Ok(())
+            })
+            .plugin(tauri_plugin_updater::Builder::new().build());
+    }
 
     #[cfg(desktop)]
     {

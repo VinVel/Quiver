@@ -19,26 +19,34 @@ jobs:
           - name: Windows x64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
+            upload_tauri_updater: true
 
           - name: Windows arm64
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
+            upload_tauri_updater: true
 
           - name: macOS Intel
             runner: macos-26-intel
             target: x86_64-apple-darwin
+            upload_tauri_updater: true
 
           - name: macOS arm64
             runner: macos-26
             target: aarch64-apple-darwin
+            upload_tauri_updater: true
 
           - name: Linux x64 GNU
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            upload_tauri_updater: false
+            appimage_update_info: gh-releases-zsync|VinVel|Quiver|latest|Quiver_*_amd64.AppImage.zsync
 
           - name: Linux arm64 GNU
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            upload_tauri_updater: false
+            appimage_update_info: gh-releases-zsync|VinVel|Quiver|latest|Quiver_*_arm64.AppImage.zsync
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
@@ -99,7 +107,8 @@ jobs:
             xdg-utils \
             patchelf \
             rpm \
-            gnupg
+            gnupg \
+            zsync
 
       - name: Install frontend dependencies and build
         run: |
@@ -154,14 +163,17 @@ jobs:
           # Ad hoc signing identity
           APPLE_SIGNING_IDENTITY: '-'
           # Updater Signing
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ matrix.upload_tauri_updater && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ matrix.upload_tauri_updater && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
           # Appimage
           SIGN: 1
           SIGN_KEY: ${{ secrets.GPG_PRIVATE_KEY_ID}}
           APPIMAGETOOL_SIGN_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE}}
           APPIMAGETOOL_FORCE_SIGN: 1
           APPIMAGE_EXTRACT_AND_RUN: 1
+          # Consumed by linuxdeploy's AppImage output plugin, which Tauri shells out to.
+          # This embeds update metadata for tools such as Gear Lever/AppImageUpdate.
+          LDAI_UPDATE_INFORMATION: ${{ matrix.appimage_update_info }}
           NO_STRIP: true
         with:
           tagName: ${{ github.ref_name }}
@@ -169,4 +181,45 @@ jobs:
           releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: true
           prerelease: false
+          uploadUpdaterJson: ${{ matrix.upload_tauri_updater }}
+          uploadUpdaterSignatures: ${{ matrix.upload_tauri_updater }}
           args: --target ${{ matrix.target }}
+
+      - name: Verify and upload AppImage update metadata
+        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux arm64 GNU' }}
+        env:
+          EXPECTED_UPDATE_INFORMATION: ${{ matrix.appimage_update_info }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          appimage="$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
+
+          if [ -z "$appimage" ]; then
+            echo "No AppImage bundle was generated."
+            exit 1
+          fi
+
+          update_information="$("$appimage" --appimage-updateinformation)"
+
+          if [ "$update_information" != "$EXPECTED_UPDATE_INFORMATION" ]; then
+            echo "Unexpected AppImage update information:"
+            echo "$update_information"
+            echo "Expected:"
+            echo "$EXPECTED_UPDATE_INFORMATION"
+            exit 1
+          fi
+
+          zsync="$(find \
+            "$(dirname "$appimage")" \
+            src-tauri \
+            -maxdepth 1 \
+            -type f \
+            -name "$(basename "$appimage").zsync" \
+            -print \
+            -quit)"
+
+          if [ -z "$zsync" ]; then
+            echo "Missing AppImage zsync sidecar for: $appimage"
+            exit 1
+          fi
+
+          gh release upload "${{ github.ref_name }}" "$zsync" --clobber
