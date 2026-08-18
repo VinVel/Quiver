@@ -21,6 +21,12 @@ struct SubtitleTrack {
     path: PathBuf,
 }
 
+#[derive(Clone, Debug)]
+struct AttachedPicture {
+    video_index: usize,
+    path: PathBuf,
+}
+
 pub async fn run_youtube_video_download<F>(
     app: AppHandle,
     runner: YtDlpRunner,
@@ -65,7 +71,7 @@ where
     });
 
     let downloaded_paths_file = subtitle_dir.join("downloaded-media-paths.txt");
-    emit_pipeline_log(&on_chunk, "Recording final yt-dlp media path(s).\n");
+    emit_pipeline_log(&on_chunk, "Recording final yt-dlp output file name(s).\n");
     let streaming_on_chunk = Arc::clone(&on_chunk);
     let main_output = runner
         .run_streaming(
@@ -97,7 +103,7 @@ where
     emit_pipeline_log(
         &on_chunk,
         &format!(
-            "Found {} downloaded media file(s) for remux.\n",
+            "Found {} downloaded output file(s) for subtitle attachment.\n",
             media_paths.len()
         ),
     );
@@ -106,7 +112,7 @@ where
         return Ok(with_pipeline_output(
             main_output,
             &subtitle_output,
-            "\nCould not identify the final downloaded media path; skipping subtitle remux.",
+            "\nCould not identify the final yt-dlp output file; skipping subtitle attachment.",
         ));
     }
 
@@ -230,7 +236,24 @@ async fn remux_subtitles(
     remux_log: &mut String,
     on_chunk: &Arc<impl Fn(YtDlpOutputStream, &str) + Send + Sync + 'static>,
 ) -> Result<(), String> {
+    let existing_subtitle_count = subtitle_stream_count(media_path).await?;
+    let attached_picture_video_indices = attached_picture_video_indices(media_path).await?;
+    let existing_attachment_count = attachment_stream_count(media_path).await?;
+    emit_pipeline_log(
+        on_chunk,
+        &format!(
+            "Found {existing_subtitle_count} existing subtitle stream(s) and {} attached picture stream(s).\n",
+            attached_picture_video_indices.len()
+        ),
+    );
+
     let temp_media_path = temp_media_path(media_path)?;
+    let attached_pictures = extract_attached_pictures(
+        media_path,
+        &temp_media_path,
+        &attached_picture_video_indices,
+    )
+    .await?;
     emit_pipeline_log(
         on_chunk,
         &format!(
@@ -240,6 +263,7 @@ async fn remux_subtitles(
         ),
     );
     fs::rename(media_path, &temp_media_path).map_err(|error| {
+        remove_attached_picture_files(&attached_pictures);
         format!(
             "failed to rename {} to {} before subtitle remux: {error}",
             media_path.display(),
@@ -248,18 +272,13 @@ async fn remux_subtitles(
     })?;
 
     emit_pipeline_log(on_chunk, "Running ffmpeg.\n");
-    let existing_subtitle_count = subtitle_stream_count(&temp_media_path).await?;
-    emit_pipeline_log(
-        on_chunk,
-        &format!(
-            "Found {existing_subtitle_count} existing subtitle stream(s); naming added tracks after that offset.\n"
-        ),
-    );
     let ffmpeg_result = run_ffmpeg_remux(
         temp_media_path.clone(),
         media_path.to_path_buf(),
         subtitles.to_vec(),
         existing_subtitle_count,
+        existing_attachment_count,
+        attached_pictures.clone(),
     )
     .await;
 
@@ -276,11 +295,13 @@ async fn remux_subtitles(
                 path_name(media_path)
             );
             let _ = fs::remove_file(&temp_media_path);
+            remove_attached_picture_files(&attached_pictures);
             Ok(())
         }
         Ok(output) => {
             emit_process_output(on_chunk, "ffmpeg", &output);
             let _ = restore_original_media(media_path, &temp_media_path);
+            remove_attached_picture_files(&attached_pictures);
             Err(format!(
                 "ffmpeg subtitle remux failed for {}: {}{}",
                 media_path.display(),
@@ -291,6 +312,7 @@ async fn remux_subtitles(
         Err(error) => {
             emit_pipeline_log(on_chunk, &format!("{error}\n"));
             let _ = restore_original_media(media_path, &temp_media_path);
+            remove_attached_picture_files(&attached_pictures);
             Err(error.to_string())
         }
     }
@@ -345,6 +367,8 @@ async fn run_ffmpeg_remux(
     output_media: PathBuf,
     subtitles: Vec<SubtitleTrack>,
     existing_subtitle_count: usize,
+    existing_attachment_count: usize,
+    attached_pictures: Vec<AttachedPicture>,
 ) -> Result<std::process::Output, YtDlpError> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut command = Command::new(ffmpeg_path());
@@ -358,7 +382,17 @@ async fn run_ffmpeg_remux(
                     .flat_map(|subtitle| [OsStr::new("-i"), subtitle.path.as_os_str()]),
             )
             .arg("-map")
+            .arg("0")
+            .arg("-map_metadata")
+            .arg("0")
+            .arg("-map_chapters")
             .arg("0");
+
+        for picture in &attached_pictures {
+            command
+                .arg("-map")
+                .arg(format!("-0:v:{}", picture.video_index));
+        }
 
         for index in 0..subtitles.len() {
             command.arg("-map").arg((index + 1).to_string());
@@ -369,6 +403,17 @@ async fn run_ffmpeg_remux(
             .arg("copy")
             .arg("-max_interleave_delta")
             .arg("0");
+
+        for (index, picture) in attached_pictures.iter().enumerate() {
+            let output_attachment_index = existing_attachment_count + index;
+            command
+                .arg("-attach")
+                .arg(&picture.path)
+                .arg(format!("-metadata:s:t:{output_attachment_index}"))
+                .arg("mimetype=image/png")
+                .arg(format!("-metadata:s:t:{output_attachment_index}"))
+                .arg("filename=cover.png");
+        }
 
         for (index, subtitle) in subtitles.iter().enumerate() {
             let output_subtitle_index = existing_subtitle_count + index;
@@ -393,14 +438,143 @@ async fn run_ffmpeg_remux(
     .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?
 }
 
-async fn subtitle_stream_count(media_path: &Path) -> Result<usize, String> {
+async fn extract_attached_pictures(
+    media_path: &Path,
+    temp_media_path: &Path,
+    video_indices: &[usize],
+) -> Result<Vec<AttachedPicture>, String> {
+    let mut pictures = Vec::new();
+
+    for &video_index in video_indices {
+        let picture_path = attached_picture_path(temp_media_path, video_index);
+        let input_media = media_path.to_path_buf();
+        let output_picture = picture_path.clone();
+        let output = tauri::async_runtime::spawn_blocking(move || {
+            Command::new(ffmpeg_path())
+                .arg("-y")
+                .arg("-i")
+                .arg(input_media)
+                .arg("-map")
+                .arg(format!("0:v:{video_index}"))
+                .arg("-frames:v")
+                .arg("1")
+                .arg("-c")
+                .arg("copy")
+                .arg(output_picture)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+        })
+        .await
+        .map_err(|error| format!("failed to join thumbnail extraction task: {error}"))
+        .and_then(|output| {
+            output
+                .map_err(|error| format!("failed to run ffmpeg for thumbnail extraction: {error}"))
+        });
+
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                remove_attached_picture_files(&pictures);
+                return Err(error);
+            }
+        };
+
+        if !output.status.success() || !picture_path.is_file() {
+            remove_attached_picture_files(&pictures);
+            return Err(format!(
+                "ffmpeg failed to preserve the attached thumbnail: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        pictures.push(AttachedPicture {
+            video_index,
+            path: picture_path,
+        });
+    }
+
+    Ok(pictures)
+}
+
+fn attached_picture_path(temp_media_path: &Path, video_index: usize) -> PathBuf {
+    let mut path = temp_media_path.as_os_str().to_os_string();
+    path.push(format!(".cover-{video_index}.png"));
+    PathBuf::from(path)
+}
+
+fn remove_attached_picture_files(pictures: &[AttachedPicture]) {
+    for picture in pictures {
+        let _ = fs::remove_file(&picture.path);
+    }
+}
+
+async fn attached_picture_video_indices(media_path: &Path) -> Result<Vec<usize>, String> {
     let media_path = media_path.to_path_buf();
     let output = tauri::async_runtime::spawn_blocking(move || {
         Command::new(ffprobe_path())
             .arg("-v")
             .arg("error")
             .arg("-select_streams")
-            .arg("s")
+            .arg("v")
+            .arg("-show_entries")
+            .arg("stream_disposition=attached_pic")
+            .arg("-of")
+            .arg("csv=p=0")
+            .arg(media_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+    })
+    .await
+    .map_err(|error| format!("failed to join ffprobe task: {error}"))?
+    .map_err(|error| format!("failed to run ffprobe: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "ffprobe failed while finding attached picture streams: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(parse_attached_picture_video_indices(
+        &String::from_utf8_lossy(&output.stdout),
+    ))
+}
+
+fn parse_attached_picture_video_indices(output: &str) -> Vec<usize> {
+    output
+        .lines()
+        .map(str::trim)
+        .enumerate()
+        .filter_map(|(video_index, attached_pic)| (attached_pic == "1").then_some(video_index))
+        .collect()
+}
+
+async fn attachment_stream_count(media_path: &Path) -> Result<usize, String> {
+    stream_count(media_path, "t", "attachment").await
+}
+
+async fn subtitle_stream_count(media_path: &Path) -> Result<usize, String> {
+    stream_count(media_path, "s", "subtitle").await
+}
+
+async fn stream_count(
+    media_path: &Path,
+    stream_selector: &'static str,
+    stream_description: &'static str,
+) -> Result<usize, String> {
+    let media_path = media_path.to_path_buf();
+    let output = tauri::async_runtime::spawn_blocking(move || {
+        Command::new(ffprobe_path())
+            .arg("-v")
+            .arg("error")
+            .arg("-select_streams")
+            .arg(stream_selector)
             .arg("-show_entries")
             .arg("stream=index")
             .arg("-of")
@@ -417,7 +591,7 @@ async fn subtitle_stream_count(media_path: &Path) -> Result<usize, String> {
 
     if !output.status.success() {
         return Err(format!(
-            "ffprobe failed while counting existing subtitle streams: {}{}",
+            "ffprobe failed while counting existing {stream_description} streams: {}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         ));
@@ -473,22 +647,18 @@ fn subtitle_name_and_language(path: &Path) -> Option<(String, String)> {
 
 fn temp_media_path(media_path: &Path) -> Result<PathBuf, String> {
     let parent = media_path.parent().unwrap_or_else(|| Path::new("."));
-    let stem = media_path
-        .file_stem()
-        .and_then(OsStr::to_str)
+    let file_name = media_path
+        .file_name()
         .ok_or_else(|| format!("{} has no valid file name", media_path.display()))?;
-    let extension = media_path.extension().and_then(OsStr::to_str);
-    let mut candidate = parent.join(match extension {
-        Some(extension) => format!("{stem}_temp.{extension}"),
-        None => format!("{stem}_temp"),
-    });
+    let mut temp_name = file_name.to_os_string();
+    temp_name.push(".quiver-temp");
+    let mut candidate = parent.join(&temp_name);
 
     let mut suffix = 1;
     while candidate.exists() {
-        candidate = parent.join(match extension {
-            Some(extension) => format!("{stem}_temp_{suffix}.{extension}"),
-            None => format!("{stem}_temp_{suffix}"),
-        });
+        let mut suffixed_name = file_name.to_os_string();
+        suffixed_name.push(format!(".quiver-temp-{suffix}"));
+        candidate = parent.join(suffixed_name);
         suffix += 1;
     }
 
@@ -517,4 +687,29 @@ fn with_pipeline_output(
         subtitle_output.stderr, main_output.stderr, extra_stderr
     );
     main_output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        main_download_args, parse_attached_picture_video_indices
+    };
+    use std::{fs, path::Path};
+
+    #[test]
+    fn records_the_final_yt_dlp_output_path() {
+        let args = main_download_args(
+            vec!["https://example.com/video".to_string()],
+            Path::new("output-paths.txt"),
+        );
+
+        assert!(args.windows(3).any(|window| {
+            window == ["--print-to-file", "after_move:filepath", "output-paths.txt"]
+        }));
+    }
+
+    #[test]
+    fn identifies_attached_picture_video_streams_by_video_stream_index() {
+        assert_eq!(parse_attached_picture_video_indices("0\n1\n0\n1\n"), [1, 3]);
+    }
 }

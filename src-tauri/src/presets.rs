@@ -266,7 +266,6 @@ fn command_args(
         }
         (PresetSource::General, PresetMedia::Video, _) => {
             args.extend(video_args("bv*+mergeall/bv*+ba"));
-            args.extend(["--remux-video".to_string(), "mkv".to_string()]);
         }
         (PresetSource::General, PresetMedia::Audio, _) => {
             args.extend(audio_args());
@@ -285,6 +284,8 @@ fn video_args(format_selector: &str) -> Vec<String> {
         "quality,vcodec:av1:vp9:h264,acodec:opus:aac".to_string(),
         "--embed-chapters".to_string(),
         "--embed-thumbnail".to_string(),
+        "--convert-thumbnails".to_string(),
+        "png".to_string(),
         "--embed-subs".to_string(),
         "--compat-options".to_string(),
         "no-live-chat".to_string(),
@@ -294,7 +295,7 @@ fn video_args(format_selector: &str) -> Vec<String> {
         "all".to_string(),
         "--convert-subs".to_string(),
         "ass".to_string(),
-        "--merge-output-format".to_string(),
+        "--remux-video".to_string(),
         "mkv".to_string(),
     ]
 }
@@ -313,7 +314,7 @@ fn audio_args() -> Vec<String> {
 fn youtube_args() -> Vec<String> {
     vec![
         "--extractor-args".to_string(),
-        "youtube:player-client=default,mweb,web_safari,tv_embedded".to_string(),
+        "youtube:player-client=default,mweb,web_safari,tv,ios".to_string(),
         "--extractor-args".to_string(),
         format!("youtubepot-bgutilhttp:base_url={POT_BASE_URL}"),
     ]
@@ -357,5 +358,39 @@ mod tests {
         .expect_err("empty link should be rejected");
 
         assert_eq!(error, "Link is required.");
+    }
+
+    #[test]
+    fn video_presets_remux_to_mkv_and_preserve_standard_subtitles() {
+        for preset_id in [
+            PresetId::YouTubeCookiesVideo,
+            PresetId::YouTubePlainVideo,
+            PresetId::GeneralCookiesVideo,
+            PresetId::GeneralPlainVideo,
+        ] {
+            let preview = command_preview(
+                preset_id,
+                &DownloadPresetInput {
+                    link: "https://example.com/video".to_string(),
+                    directory: None,
+                    cookies_path: None,
+                },
+            )
+            .expect("preview should be created");
+
+            assert!(has_option_value(&preview.args, "--remux-video", "mkv"));
+            assert!(preview.args.iter().any(|arg| arg == "--embed-thumbnail"));
+            assert!(has_option_value(
+                &preview.args,
+                "--convert-thumbnails",
+                "png"
+            ));
+            assert!(!preview.args.iter().any(|arg| arg == "--convert-subs"));
+        }
+    }
+
+    fn has_option_value(args: &[String], option: &str, value: &str) -> bool {
+        args.windows(2)
+            .any(|window| window[0] == option && window[1] == value)
     }
 }
