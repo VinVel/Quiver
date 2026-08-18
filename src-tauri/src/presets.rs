@@ -313,6 +313,8 @@ fn audio_args() -> Vec<String> {
 
 fn youtube_args() -> Vec<String> {
     vec![
+        "--impersonate".to_string(),
+        "chrome".to_string(),
         "--extractor-args".to_string(),
         "youtube:player-client=default,mweb,web_safari,tv,ios".to_string(),
         "--extractor-args".to_string(),
