@@ -691,10 +691,8 @@ fn with_pipeline_output(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        main_download_args, parse_attached_picture_video_indices
-    };
-    use std::{fs, path::Path};
+    use super::{main_download_args, parse_attached_picture_video_indices, subtitle_download_args};
+    use std::path::Path;
 
     #[test]
     fn records_the_final_yt_dlp_output_path() {
@@ -706,6 +704,24 @@ mod tests {
         assert!(args.windows(3).any(|window| {
             window == ["--print-to-file", "after_move:filepath", "output-paths.txt"]
         }));
+    }
+
+    #[test]
+    fn preserves_impersonation_for_subtitle_downloads() {
+        let args = subtitle_download_args(
+            &[
+                "--impersonate".to_string(),
+                "chrome".to_string(),
+                "https://www.youtube.com/watch?v=example".to_string(),
+            ],
+            "https://www.youtube.com/watch?v=example",
+            Path::new("subtitles"),
+        );
+
+        assert!(
+            args.windows(2)
+                .any(|window| window == ["--impersonate", "chrome"])
+        );
     }
 
     #[test]

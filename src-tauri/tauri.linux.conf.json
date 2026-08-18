@@ -3,21 +3,21 @@
     "externalBin": [
       "binaries/deno",
       "binaries/bgutil-pot",
+      "binaries/quiver_yt-dlp",
       "binaries/ytsubconverter"
     ],
     "linux": {
       "appimage": {
         "files": {
           "/usr/bin/ffmpeg": "binaries/appimage/ffmpeg",
-          "/usr/bin/ffprobe": "binaries/appimage/ffprobe",
-          "/usr/bin/yt-dlp": "binaries/appimage/yt-dlp"
+          "/usr/bin/ffprobe": "binaries/appimage/ffprobe"
         }
       },
       "deb": {
-        "depends": ["ffmpeg", "yt-dlp"]
+        "depends": ["ffmpeg"]
       },
       "rpm": {
-        "depends": ["ffmpeg", "yt-dlp"]
+        "depends": ["ffmpeg"]
       }
     }
   }

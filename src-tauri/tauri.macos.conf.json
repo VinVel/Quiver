@@ -3,7 +3,7 @@
     "externalBin": [
       "binaries/deno",
       "binaries/bgutil-pot",
-      "binaries/yt-dlp",
+      "binaries/quiver_yt-dlp",
       "binaries/ytsubconverter"
     ],
     "icon": [

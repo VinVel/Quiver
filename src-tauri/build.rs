@@ -19,7 +19,7 @@ const BGUTIL_POT_PROVIDER_SIDECAR_NAME: &str = "bgutil-pot";
 const DENO_SIDECAR_NAME: &str = "deno";
 const FFMPEG_SIDECAR_NAME: &str = "ffmpeg";
 const FFPROBE_SIDECAR_NAME: &str = "ffprobe";
-const YT_DLP_SIDECAR_NAME: &str = "yt-dlp";
+const YT_DLP_SIDECAR_NAME: &str = "quiver_yt-dlp";
 const YT_SUB_CONVERTER_SIDECAR_NAME: &str = "ytsubconverter";
 
 fn main() {
@@ -1225,11 +1225,7 @@ fn prepare_linux_appimage_binary_files() {
             )
         });
 
-        for binary_name in [
-            FFMPEG_SIDECAR_NAME,
-            FFPROBE_SIDECAR_NAME,
-            YT_DLP_SIDECAR_NAME,
-        ] {
+        for binary_name in [FFMPEG_SIDECAR_NAME, FFPROBE_SIDECAR_NAME] {
             let source = source_dir.join(sidecar_file_name_for_host(binary_name));
             let destination = appimage_dir.join(executable_name(binary_name));
 

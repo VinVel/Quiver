@@ -12,14 +12,13 @@ use std::{
 };
 
 use tauri::AppHandle;
-#[cfg(not(target_os = "linux"))]
 use tauri_plugin_shell::{ShellExt, process::CommandEvent};
 
 const YT_DLP_BINARY_ENV: &str = "QUIVER_YT_DLP_BINARY";
 const DENO_BINARY_NAME: &str = "deno";
 const FFMPEG_BINARY_NAME: &str = "ffmpeg";
 const FFPROBE_BINARY_NAME: &str = "ffprobe";
-const YT_DLP_BINARY_NAME: &str = "yt-dlp";
+const YT_DLP_BINARY_NAME: &str = "quiver_yt-dlp";
 const YT_DLP_PLUGINS_RESOURCE_PATH: &[&str] = &["yt-dlp-plugins"];
 
 #[derive(Debug, Serialize)]
@@ -69,7 +68,6 @@ pub struct YtDlpRunner {
 
 enum YtDlpCommand {
     Override(PathBuf),
-    #[cfg(not(target_os = "linux"))]
     Sidecar(AppHandle),
 }
 
@@ -95,38 +93,11 @@ impl YtDlpRunner {
             return Err(YtDlpError::MissingBinary(vec![path]));
         }
 
-        #[cfg(target_os = "linux")]
-        {
-            drop(app);
-
-            let uses_bundled_yt_dlp = is_appimage_runtime();
-            let command = if uses_bundled_yt_dlp {
-                let bundled_path = current_exe_sidecar_path(YT_DLP_BINARY_NAME)
-                    .unwrap_or_else(|| PathBuf::from(executable_name(YT_DLP_BINARY_NAME)));
-
-                if !bundled_path.is_file() {
-                    return Err(YtDlpError::MissingBinary(vec![bundled_path]));
-                }
-
-                YtDlpCommand::Override(bundled_path)
-            } else {
-                YtDlpCommand::Override(YT_DLP_BINARY_NAME.into())
-            };
-            Ok(Self {
-                command,
-                plugin_dirs: Vec::new(),
-                uses_bundled_yt_dlp,
-            })
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            Ok(Self {
-                command: YtDlpCommand::Sidecar(app),
-                plugin_dirs: Vec::new(),
-                uses_bundled_yt_dlp: true,
-            })
-        }
+        Ok(Self {
+            command: YtDlpCommand::Sidecar(app),
+            plugin_dirs: Vec::new(),
+            uses_bundled_yt_dlp: true,
+        })
     }
 
     pub async fn run<I, S>(&self, args: I) -> Result<YtDlpCommandOutput, YtDlpError>
@@ -143,7 +114,6 @@ impl YtDlpRunner {
                     .await
                     .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?
             }
-            #[cfg(not(target_os = "linux"))]
             YtDlpCommand::Sidecar(app) => {
                 let output = app
                     .shell()
@@ -186,7 +156,6 @@ impl YtDlpRunner {
                 .await
                 .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?
             }
-            #[cfg(not(target_os = "linux"))]
             YtDlpCommand::Sidecar(app) => run_sidecar_streaming(app, args, on_chunk).await,
         }
     }
@@ -450,7 +419,6 @@ where
     })
 }
 
-#[cfg(not(target_os = "linux"))]
 async fn run_sidecar_streaming<F>(
     app: &AppHandle,
     args: Vec<String>,
@@ -605,14 +573,6 @@ mod tests {
             }
         }
 
-        #[cfg(target_os = "linux")]
-        fn binary_path(&self) -> &Path {
-            match &self.command {
-                YtDlpCommand::Override(path) => path,
-            }
-        }
-
-        #[cfg(not(target_os = "linux"))]
         fn binary_path(&self) -> Option<&Path> {
             match &self.command {
                 YtDlpCommand::Override(path) => Some(path),
@@ -630,21 +590,17 @@ mod tests {
 
     #[test]
     fn runner_exposes_binary_path() {
-        let runner = YtDlpRunner::from_path_for_test(PathBuf::from("yt-dlp"));
+        let runner = YtDlpRunner::from_path_for_test(PathBuf::from("quiver_yt-dlp"));
 
-        #[cfg(target_os = "linux")]
-        assert!(runner.binary_path().ends_with("yt-dlp"));
-
-        #[cfg(not(target_os = "linux"))]
         assert!(
             runner
                 .binary_path()
-                .is_some_and(|path| path.ends_with("yt-dlp"))
+                .is_some_and(|path| path.ends_with("quiver_yt-dlp"))
         );
     }
 
     #[test]
-    fn system_yt_dlp_runner_ignores_bundled_plugin_dirs() {
+    fn development_override_ignores_bundled_plugin_dirs() {
         let args = YtDlpRunner::from_path_for_test(PathBuf::from("yt-dlp"))
             .with_plugin_dirs(vec![PathBuf::from(
                 "/usr/lib/Quiver/resources/yt-dlp-plugins",
@@ -656,7 +612,7 @@ mod tests {
 
     #[test]
     fn bundled_yt_dlp_runner_uses_bundled_plugin_dirs() {
-        let args = YtDlpRunner::from_bundled_path_for_test(PathBuf::from("yt-dlp"))
+        let args = YtDlpRunner::from_bundled_path_for_test(PathBuf::from("quiver_yt-dlp"))
             .with_plugin_dirs(vec![PathBuf::from(
                 "/usr/lib/Quiver/resources/yt-dlp-plugins",
             )])

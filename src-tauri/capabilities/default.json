@@ -24,8 +24,8 @@
           ]
         },
         {
-          "name": "yt-dlp",
-          "cmd": "yt-dlp",
+          "name": "quiver_yt-dlp",
+          "cmd": "quiver_yt-dlp",
           "sidecar": true
         },
         {
@@ -60,8 +60,8 @@
           ]
         },
         {
-          "name": "yt-dlp",
-          "cmd": "yt-dlp",
+          "name": "quiver_yt-dlp",
+          "cmd": "quiver_yt-dlp",
           "sidecar": true
         },
         {
