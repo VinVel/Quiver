@@ -115,7 +115,7 @@ Since this is a Tauri project, it is advisable to first checkout the [Tauri prer
 Other prerequisites: 
  - [uv](https://docs.astral.sh/uv/getting-started/installation/)
  - [pnpm](https://pnpm.io/installation)
- - [.NET 8 (Linux/MacOS)](https://dotnet.microsoft.com/en-us/download/dotnet/8.0)
+ - [.NET 8 (Linux/MacOS)](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)
 
 This repo contains submodules, therefore you should clone the repo with the following command:
 
