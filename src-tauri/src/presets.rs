@@ -293,8 +293,6 @@ fn video_args(format_selector: &str) -> Vec<String> {
         "never".to_string(),
         "--sub-lang".to_string(),
         "all".to_string(),
-        "--convert-subs".to_string(),
-        "ass".to_string(),
         "--remux-video".to_string(),
         "mkv".to_string(),
     ]
