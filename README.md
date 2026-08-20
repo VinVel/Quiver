@@ -6,14 +6,15 @@ Dead-simple `yt-dlp` downloads for people who do not want to build a command by 
 | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | ![Quiver output view](Screenshots/Screenshot%202026-06-05%20223533.png) | ![Quiver advanced subtitle pipeline](Screenshots/Screenshot%202026-06-05%20223618.png) |
 
-Quiver is a small desktop GUI for `yt-dlp`. Paste a link, choose the closest preset, press `Prepare`, then `Download`. It exists because `yt-dlp` is powerful, but the common path should not require memorizing format selectors, subtitle flags, cookie options, or YouTube workaround arguments.
+Quiver is a small desktop GUI for `yt-dlp`. Paste a link, choose the closest preset, press `Prepare`, then `Download`. 
+It exists because `yt-dlp` is powerful, but the common path should not require memorizing format selectors, subtitle flags, cookie options, or YouTube workaround arguments.
 
 ## Features
 
 - One-window download flow: URL, preset, output folder, optional cookies file, command preview, and live output.
 - Eight built-in presets for YouTube/general downloads, audio/video, with/without cookies.
 - YouTube-specific POT support through a bundled local `bgutil` provider.
-- Bundled `yt-dlp` on Windows and macOS, plus bundled `Deno`, POT provider, and `YTSubConverter`; Linux packages use the distribution-provided `yt-dlp`. Windows and Linux release builds bundle `ffmpeg` and `ffprobe`.
+- Bundled `yt-dlp` on Windows and macOS, plus bundled `Deno`, POT provider, and `YTSubConverter`; Linux packages use the distribution-provided `yt-dlp`. Windows and Linux (Appimage) release builds bundle `ffmpeg` and `ffprobe`.
 - Command preview before execution, so you can see exactly what Quiver will run.
 - Live stdout/stderr output while `yt-dlp` is running.
 - Persistent save directory, cookies path, theme mode, and color preset settings.
@@ -22,7 +23,8 @@ Quiver is a small desktop GUI for `yt-dlp`. Paste a link, choose the closest pre
 
 ## Why Quiver?
 
-Most `yt-dlp` interfaces either expose a large settings surface or hide too much. Quiver takes the opposite approach: it turns the download patterns that I use into clear presets and keeps the rest visible in the command preview.
+Most `yt-dlp` interfaces either expose a large settings surface or hide too much.
+ Quiver takes the opposite approach: it turns the download patterns that I use into clear presets and keeps the rest visible in the command preview.
 
 The default workflow is:
 
@@ -64,7 +66,8 @@ brew install ffmpeg
 
 #### Debian/Ubuntu/Linux Mint
 ```sh
-# Optional: verify the key fingerprint before importing: DDF1 A281 1825 3046 6AFD 1932 34C7 5D10 6D16 DFB0
+# Optional: verify the key fingerprint before importing: 
+# DDF1 A281 1825 3046 6AFD 1932 34C7 5D10 6D16 DFB0
 curl -fsSL https://packages.velcore.net/VinVel/Quiver/public.key | gpg --show-keys
 
 # Import the signing key
@@ -101,12 +104,18 @@ EOF
 # https://packages.velcore.net/VinVel/Quiver/prerelease
 
 sudo dnf install quiver
-# Optional: verify the key fingerprint on first update/install: DDF1 A281 1825 3046 6AFD 1932 34C7 5D10 6D16 DFB0
+# Optional: verify the key fingerprint on first update/install: 
+# DDF1 A281 1825 3046 6AFD 1932 34C7 5D10 6D16 DFB0
 ```
+
+#### Other Linux Distros
+
+Download the Distro-agnostic Appimage from [Releases](https://github.com/VinVel/Quiver/releases/latest) and import it into e.g. Gearlever. It contains metadata for automatic updates.
 
 ## Advanced Subtitle Pipeline
 
-The Advanced Subtitle Pipeline is optional and only applies to YouTube video presets. It downloads YouTube `srv3` subtitles, converts them through `YTSubConverter`, and remuxes the result into the downloaded media. Windows and Linux release builds use bundled `ffmpeg` and `ffprobe`; macOS uses the tools installed through Homebrew.
+The Advanced Subtitle Pipeline is optional and only applies to YouTube video presets. It downloads YouTube `srv3` subtitles, converts them through `YTSubConverter`, and remuxes the result into the downloaded media. 
+Windows and Linux release builds use bundled `ffmpeg` and `ffprobe`; macOS uses the tools installed through Homebrew.
 
 ## Development
 
