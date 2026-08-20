@@ -46,7 +46,7 @@ jobs:
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             upload_tauri_updater: false
-            appimage_update_info: gh-releases-zsync|VinVel|Quiver|latest|Quiver_*_arm64.AppImage.zsync
+            appimage_update_info: gh-releases-zsync|VinVel|Quiver|latest|Quiver_*_aarch64.AppImage.zsync
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
@@ -189,8 +189,14 @@ jobs:
         env:
           EXPECTED_UPDATE_INFORMATION: ${{ matrix.appimage_update_info }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPIMAGE_BUNDLE_DIR: src-tauri/target/${{ matrix.target }}/release/bundle/appimage
         run: |
-          appimage="$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
+          if [ ! -d "$APPIMAGE_BUNDLE_DIR" ]; then
+            echo "AppImage bundle directory does not exist: $APPIMAGE_BUNDLE_DIR"
+            exit 1
+          fi
+
+          appimage="$(find "$APPIMAGE_BUNDLE_DIR" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
 
           if [ -z "$appimage" ]; then
             echo "No AppImage bundle was generated."
@@ -207,17 +213,16 @@ jobs:
             exit 1
           fi
 
-          zsync="$(find \
-            "$(dirname "$appimage")" \
-            src-tauri \
-            -maxdepth 1 \
-            -type f \
-            -name "$(basename "$appimage").zsync" \
-            -print \
-            -quit)"
+          zsync_name="$(basename "$appimage").zsync"
+          zsync="src-tauri/$zsync_name"
 
-          if [ -z "$zsync" ]; then
-            echo "Missing AppImage zsync sidecar for: $appimage"
+          if [ ! -f "$zsync" ]; then
+            zsync="$APPIMAGE_BUNDLE_DIR/$zsync_name"
+          fi
+
+          if [ ! -f "$zsync" ]; then
+            echo "Missing AppImage zsync sidecar: $zsync_name"
+            echo "Checked src-tauri and $APPIMAGE_BUNDLE_DIR."
             exit 1
           fi
 
