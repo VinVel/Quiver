@@ -11,7 +11,31 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 const DENO_VERSION: &str = "2.9.4";
+const DENO_RELEASE_BASE_URL: &str = "https://github.com/denoland/deno/releases/download";
+const DENO_CHECKSUM_FILE_SUFFIX: &str = ".sha256sum";
 const YT_DLP_BUILD_RECIPE: &str = "pyinstaller-default-curl-cffi-v2";
+const YT_DLP_OPTIONAL_PYTHON_IMPORTS: &[&str] = &[
+    "brotli",
+    "certifi",
+    "Cryptodome",
+    "curl_cffi",
+    "mutagen",
+    "requests",
+    "urllib3",
+    "websockets",
+    "yt_dlp_ejs",
+];
+const YT_DLP_REQUIRED_DEPENDENCIES: &[&str] = &[
+    "brotli",
+    "certifi",
+    "cryptodome",
+    "curl-cffi",
+    "mutagen",
+    "requests",
+    "urllib3",
+    "websockets",
+    "yt-dlp-ejs",
+];
 const FFMPEG_BUILDS_RELEASE_BASE_URL: &str =
     "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download";
 const FFMPEG_BUILDS_CHECKSUMS: &str = "checksums.sha256";
@@ -21,6 +45,21 @@ const FFMPEG_SIDECAR_NAME: &str = "ffmpeg";
 const FFPROBE_SIDECAR_NAME: &str = "ffprobe";
 const YT_DLP_SIDECAR_NAME: &str = "quiver_yt-dlp";
 const YT_SUB_CONVERTER_SIDECAR_NAME: &str = "ytsubconverter";
+#[cfg(windows)]
+const STOP_COPIED_SIDECARS_POWERSHELL_SCRIPT: &str = r#"
+$paths = @($env:QUIVER_COPIED_SIDECARS -split '\|' | ForEach-Object {
+    [System.IO.Path]::GetFullPath($_).ToLowerInvariant()
+})
+Get-CimInstance Win32_Process |
+    Where-Object {
+        $_.ExecutablePath -and
+        $paths -contains ([System.IO.Path]::GetFullPath($_.ExecutablePath).ToLowerInvariant())
+    } |
+    ForEach-Object {
+        Write-Host "Stopping stale copied sidecar process $($_.ProcessId): $($_.ExecutablePath)"
+        Stop-Process -Id $_.ProcessId -Force
+    }
+"#;
 
 fn main() {
     configure_build_tracking();
@@ -77,27 +116,13 @@ fn stop_running_copied_sidecars() {
         }
 
         let sidecar_paths = running_sidecars.join("|");
-        let script = r#"
-$paths = @($env:QUIVER_COPIED_SIDECARS -split '\|' | ForEach-Object {
-    [System.IO.Path]::GetFullPath($_).ToLowerInvariant()
-})
-Get-CimInstance Win32_Process |
-    Where-Object {
-        $_.ExecutablePath -and
-        $paths -contains ([System.IO.Path]::GetFullPath($_.ExecutablePath).ToLowerInvariant())
-    } |
-    ForEach-Object {
-        Write-Host "Stopping stale copied sidecar process $($_.ProcessId): $($_.ExecutablePath)"
-        Stop-Process -Id $_.ProcessId -Force
-    }
-"#;
         let status = Command::new("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
             .args([
                 "-NoProfile",
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                script,
+                STOP_COPIED_SIDECARS_POWERSHELL_SCRIPT,
             ])
             .env("QUIVER_COPIED_SIDECARS", sidecar_paths)
             .status()
@@ -404,18 +429,7 @@ fn yt_dlp_python_executable(virtual_environment: &Path) -> PathBuf {
 }
 
 fn verify_yt_dlp_python_dependencies(build_dir: &Path, python: &Path) {
-    let imports = [
-        "brotli",
-        "certifi",
-        "Cryptodome",
-        "curl_cffi",
-        "mutagen",
-        "requests",
-        "urllib3",
-        "websockets",
-        "yt_dlp_ejs",
-    ]
-    .join(", ");
+    let imports = YT_DLP_OPTIONAL_PYTHON_IMPORTS.join(", ");
     let mut command = Command::new(python);
     command
         .args(["-c", &format!("import {imports}")])
@@ -486,17 +500,7 @@ fn verify_yt_dlp_executable(executable: &Path) {
     )
     .to_ascii_lowercase()
     .replace('_', "-");
-    for dependency in [
-        "brotli",
-        "certifi",
-        "cryptodome",
-        "curl-cffi",
-        "mutagen",
-        "requests",
-        "urllib3",
-        "websockets",
-        "yt-dlp-ejs",
-    ] {
+    for dependency in YT_DLP_REQUIRED_DEPENDENCIES {
         assert!(
             diagnostic_output.contains(dependency),
             "built yt-dlp executable did not report required dependency {dependency}; output:\n{diagnostic_output}"
@@ -1179,10 +1183,8 @@ fn stage_deno_sidecar() {
 
     let target = build_target_triple();
     let archive_name = deno_archive_name(&target);
-    let archive_url = format!(
-        "https://github.com/denoland/deno/releases/download/v{DENO_VERSION}/{archive_name}"
-    );
-    let checksum_url = format!("{archive_url}.sha256sum");
+    let archive_url = format!("{DENO_RELEASE_BASE_URL}/v{DENO_VERSION}/{archive_name}");
+    let checksum_url = format!("{archive_url}{DENO_CHECKSUM_FILE_SUFFIX}");
     let archive = download(&archive_url);
     let checksum = download_text(&checksum_url);
 
