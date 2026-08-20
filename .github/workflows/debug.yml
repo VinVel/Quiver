@@ -146,4 +146,6 @@ jobs:
           NO_STRIP: true
         with:
           uploadWorkflowArtifacts: true
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
           args: --target ${{ matrix.target }} --debug --verbose -- -vv

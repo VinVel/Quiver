@@ -1,5 +1,6 @@
 {
   "bundle": {
+    "createUpdaterArtifacts": false,
     "externalBin": [
       "binaries/deno",
       "binaries/bgutil-pot",
