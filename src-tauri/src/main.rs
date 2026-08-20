@@ -5,7 +5,11 @@
 fn configure_webkit() {
     // SAFETY: This runs before Tauri or any application threads are started.
     unsafe {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        if std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        } else {
+            std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
+        }
     }
 }
 
