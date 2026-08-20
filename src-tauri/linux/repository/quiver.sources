@@ -1,0 +1,5 @@
+Types: deb
+URIs: https://packages.velcore.net/VinVel/Quiver
+Suites: stable
+Components: main
+Signed-By: /usr/share/keyrings/quiver-archive-keyring.gpg

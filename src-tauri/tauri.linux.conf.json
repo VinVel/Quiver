@@ -14,10 +14,17 @@
         }
       },
       "deb": {
-        "depends": ["ffmpeg"]
+        "depends": ["ffmpeg"],
+        "files": {
+          "/etc/apt/sources.list.d/quiver.source": "linux/repository/quiver.sources",
+          "/usr/share/keyrings/quiver-archive-keyring.gpg": "linux/keys/public_06_06_28.gpg"
+        }
       },
       "rpm": {
-        "depends": ["ffmpeg"]
+        "depends": ["ffmpeg"],
+        "files": {
+          "/etc/yum.repos.d/quiver.repo": "linux/repository/quiver.repo"
+        }
       }
     }
   }
