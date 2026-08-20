@@ -67,7 +67,6 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Install uv for yt-dlp source build
-        if: ${{ runner.os != 'Linux' }}
         uses: astral-sh/setup-uv@main
         with:
           version: "latest"
