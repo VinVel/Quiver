@@ -1197,6 +1197,18 @@ mod bgutil_pot_provider {
             &source_plugin.join("yt_dlp_plugins"),
             &plugin_resource.join("yt_dlp_plugins"),
         );
+
+        let extractor_resource = plugin_resource.join("yt_dlp_plugins").join("extractor");
+        assert!(
+            extractor_resource.join("getpot_bgutil_http.py").is_file(),
+            "bgutil POT provider plugin is missing its HTTP provider at {}",
+            extractor_resource.display()
+        );
+        assert!(
+            !extractor_resource.join("getpot_bgutil_cli.py").exists(),
+            "stale CLI-based bgutil POT provider plugin found at {}; clean the generated resource before bundling",
+            extractor_resource.join("getpot_bgutil_cli.py").display()
+        );
     }
 
     fn remove_generated_resource_directory(resources_dir: &Path, path: &Path) {

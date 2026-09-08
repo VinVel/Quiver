@@ -529,8 +529,17 @@ pub fn candidate_plugin_dirs(resource_dir: Option<&Path>) -> Vec<PathBuf> {
 
     paths
         .into_iter()
-        .filter(|path| path.join("bgutil").join("yt_dlp_plugins").is_dir())
+        .filter(|path| is_supported_plugin_dir(path))
         .collect()
+}
+
+fn is_supported_plugin_dir(path: &Path) -> bool {
+    let bgutil_dir = path.join("bgutil").join("yt_dlp_plugins");
+    let extractor_dir = bgutil_dir.join("extractor");
+
+    bgutil_dir.is_dir()
+        && extractor_dir.join("getpot_bgutil_http.py").is_file()
+        && !extractor_dir.join("getpot_bgutil_cli.py").exists()
 }
 
 fn plugin_relative_path() -> PathBuf {
@@ -553,7 +562,7 @@ fn executable_extension() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{YtDlpCommand, YtDlpRunner, workspace_root};
+    use super::{YtDlpCommand, YtDlpRunner, is_supported_plugin_dir, workspace_root};
     use std::path::{Path, PathBuf};
 
     impl YtDlpRunner {
@@ -621,5 +630,24 @@ mod tests {
         assert!(args.windows(2).any(|args| {
             args[0] == "--plugin-dirs" && args[1] == "/usr/lib/Quiver/resources/yt-dlp-plugins"
         }));
+    }
+
+    #[test]
+    fn stale_cli_only_plugin_dirs_are_ignored() {
+        let root =
+            std::env::temp_dir().join(format!("quiver-stale-plugin-test-{}", std::process::id()));
+        let plugin_dir = root.join("yt-dlp-plugins");
+        let extractor_dir = plugin_dir.join("bgutil/yt_dlp_plugins/extractor");
+        std::fs::create_dir_all(&extractor_dir).expect("plugin directory should be created");
+        std::fs::write(extractor_dir.join("getpot_bgutil_cli.py"), "# stale plugin")
+            .expect("stale plugin should be written");
+        std::fs::write(
+            extractor_dir.join("getpot_bgutil_http.py"),
+            "# mixed stale plugin",
+        )
+        .expect("HTTP plugin should be written");
+
+        assert!(!is_supported_plugin_dir(&plugin_dir));
+        std::fs::remove_dir_all(root).expect("temporary plugin directory should be removed");
     }
 }
