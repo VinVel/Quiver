@@ -1,99 +1,96 @@
 use std::{
-    error::Error,
-    fmt,
     net::{SocketAddr, TcpStream},
+    process::Stdio,
     sync::Mutex,
     time::Duration,
 };
 
-use tauri::{AppHandle, Manager};
-use tauri_plugin_shell::{
-    ShellExt,
-    process::{CommandChild, CommandEvent},
+use thiserror::Error;
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::{Child, Command},
+    time::sleep,
 };
 
+use crate::yt_dlp::sidecar_path;
+
 const POT_SERVER_PORT: u16 = 4416;
-const POT_SERVER_PORT_TEXT: &str = "4416";
+const POT_START_ATTEMPTS: usize = 50;
+const POT_START_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 pub struct PotServer {
-    child: Mutex<Option<CommandChild>>,
+    child: Mutex<Option<Child>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum PotServerError {
+    #[error("POT provider sidecar is missing")]
+    MissingBinary,
+    #[error("failed to start POT server: {0}")]
     SpawnFailed(String),
-    AlreadyRunning,
+    #[error("POT server did not become ready")]
+    NotReady,
 }
 
 impl PotServer {
-    pub fn start_async(app: AppHandle) {
-        tauri::async_runtime::spawn(async move {
-            if let Err(error) = start_and_store(&app) {
-                eprintln!("Failed to start POT server: {error}");
-            }
-        });
-    }
-
-    fn set_child(&self, child: CommandChild) {
-        if let Ok(mut existing_child) = self.child.lock() {
-            if let Some(existing_child) = existing_child.take() {
-                let _ = existing_child.kill();
-            }
-
-            *existing_child = Some(child);
+    /// Start the bundled provider only if no provider already listens on the configured port.
+    ///
+    /// # Errors
+    /// Returns an error if the sidecar is missing, fails to launch, or never becomes ready.
+    pub async fn ensure_started(&self) -> Result<(), PotServerError> {
+        if is_server_reachable() {
+            return Ok(());
         }
+        let binary = sidecar_path("bgutil-pot").ok_or(PotServerError::MissingBinary)?;
+        {
+            let mut child_slot = self
+                .child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(child) = child_slot.as_mut()
+                && child
+                    .try_wait()
+                    .map_err(|error| PotServerError::SpawnFailed(error.to_string()))?
+                    .is_none()
+            {
+                return Ok(());
+            }
+            let mut child = Command::new(binary)
+                .args(["--port", "4416"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|error| PotServerError::SpawnFailed(error.to_string()))?;
+            if let Some(stderr) = child.stderr.take() {
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        eprintln!("POT server: {line}");
+                    }
+                });
+            }
+            *child_slot = Some(child);
+        }
+        for _ in 0..POT_START_ATTEMPTS {
+            if is_server_reachable() {
+                return Ok(());
+            }
+            sleep(POT_START_DELAY).await;
+        }
+        self.stop();
+        Err(PotServerError::NotReady)
     }
 
     pub fn stop(&self) {
-        if let Ok(mut child) = self.child.lock()
-            && let Some(child) = child.take()
+        if let Ok(mut child_slot) = self.child.lock()
+            && let Some(mut child) = child_slot.take()
         {
-            let _ = child.kill();
+            let _ = child.start_kill();
         }
     }
-}
-
-fn start_and_store(app: &AppHandle) -> Result<(), PotServerError> {
-    if is_server_reachable() {
-        return Ok(());
-    }
-
-    let child = spawn_pot_server(app)?;
-    app.state::<PotServer>().set_child(child);
-
-    Ok(())
-}
-
-fn spawn_pot_server(app: &AppHandle) -> Result<CommandChild, PotServerError> {
-    if is_server_reachable() {
-        return Err(PotServerError::AlreadyRunning);
-    }
-
-    let (mut rx, child) = app
-        .shell()
-        .sidecar("bgutil-pot")
-        .map_err(|error| PotServerError::SpawnFailed(error.to_string()))?
-        .args(["--port", POT_SERVER_PORT_TEXT])
-        .spawn()
-        .map_err(|error| PotServerError::SpawnFailed(error.to_string()))?;
-
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stderr(bytes) => {
-                    eprintln!(
-                        "POT server stderr: {}",
-                        String::from_utf8_lossy(&bytes).trim_end()
-                    );
-                }
-                CommandEvent::Error(error) => eprintln!("POT server process error: {error}"),
-                _ => {}
-            }
-        }
-    });
-
-    Ok(child)
 }
 
 impl Drop for PotServer {
@@ -102,27 +99,11 @@ impl Drop for PotServer {
     }
 }
 
-impl fmt::Display for PotServerError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::SpawnFailed(error) => write!(formatter, "failed to start POT server: {error}"),
-            Self::AlreadyRunning => write!(formatter, "POT server is already reachable"),
-        }
-    }
-}
-
-impl Error for PotServerError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        None
-    }
-}
-
 fn is_server_reachable() -> bool {
     let addresses = [
         SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], POT_SERVER_PORT)),
         SocketAddr::from(([127, 0, 0, 1], POT_SERVER_PORT)),
     ];
-
     addresses
         .iter()
         .any(|address| TcpStream::connect_timeout(address, Duration::from_millis(100)).is_ok())

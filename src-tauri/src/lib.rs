@@ -1,93 +1,20 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[path = "../../src/pot_server.rs"]
-mod pot_server;
-#[path = "../../src/presets.rs"]
-mod presets;
-#[path = "../../src/subtitle_pipeline.rs"]
-mod subtitle_pipeline;
-#[path = "../../src/yt_dlp.rs"]
-mod yt_dlp;
+#![expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri commands extract owned arguments and state handles from IPC."
+)]
 
-use presets::{DownloadPreset, DownloadPresetInput, PresetCommandPreview, PresetId};
-use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::path::PathBuf;
+
+use quiver_core::{
+    download::{DownloadEvent, DownloadRequest, DownloadService},
+    presets::{self, DownloadPreset, DownloadPresetInput, PresetCommandPreview, PresetId},
+    settings::{DownloadInputSettings, SettingsStore},
+    yt_dlp::{self, YtDlpCommandOutput, YtDlpOutputStream, YtDlpRunner},
+};
+use serde::Serialize;
 use tauri::{Emitter, Manager};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri_plugin_updater::UpdaterExt;
-use yt_dlp::{YtDlpCommandOutput, YtDlpOutputStream, YtDlpRunner};
-
-const THEME_SETTINGS_FILE_NAME: &str = "theme-settings.json";
-const INPUT_SETTINGS_FILE_NAME: &str = "input-settings.json";
-const DEFAULT_THEME_MODE: &str = "system";
-const DEFAULT_THEME_PRESET: &str = "crystal";
-const DEFAULT_DOWNLOAD_DIRECTORY: &str = "~/Downloads";
-const DEFAULT_COOKIES_PATH: &str = "~/Downloads/cookies.txt";
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-async fn update(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
-    if let Some(update) = app.updater()?.check().await? {
-        let mut downloaded = 0;
-
-        update
-            .download_and_install(
-                |chunk_length, content_length| {
-                    downloaded += chunk_length;
-                    println!("downloaded {downloaded} from {content_length:?}");
-                },
-                || {
-                    println!("download finished");
-                },
-            )
-            .await?;
-
-        println!("update installed");
-        app.restart();
-    }
-
-    Ok(())
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ThemePreferences {
-    mode: String,
-    preset: String,
-}
-
-impl Default for ThemePreferences {
-    fn default() -> Self {
-        Self {
-            mode: DEFAULT_THEME_MODE.to_string(),
-            preset: DEFAULT_THEME_PRESET.to_string(),
-        }
-    }
-}
-
-#[derive(Default)]
-struct ThemeSettings {
-    preferences: Mutex<ThemePreferences>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DownloadInputSettings {
-    directory: String,
-    cookies_path: String,
-}
-
-impl Default for DownloadInputSettings {
-    fn default() -> Self {
-        Self {
-            directory: DEFAULT_DOWNLOAD_DIRECTORY.to_string(),
-            cookies_path: DEFAULT_COOKIES_PATH.to_string(),
-        }
-    }
-}
-
-#[derive(Default)]
-struct InputSettings {
-    values: Mutex<DownloadInputSettings>,
-}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,117 +24,69 @@ struct YtDlpOutputChunk {
     chunk: String,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+async fn update(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
+    if let Some(update) = app.updater()?.check().await? {
+        let mut downloaded = 0;
+        update
+            .download_and_install(
+                |chunk_length, content_length| {
+                    downloaded += chunk_length;
+                    println!("downloaded {downloaded} from {content_length:?}");
+                },
+                || println!("download finished"),
+            )
+            .await?;
+        println!("update installed");
+        app.restart();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {name}! You've been greeted from Rust!")
 }
 
 #[tauri::command]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Tauri command state and app handles are extracted by value."
-)]
-fn get_theme_mode(app: tauri::AppHandle, settings: tauri::State<'_, ThemeSettings>) -> String {
-    let preferences = load_theme_preferences(&app, &settings);
-    match preferences.mode.as_str() {
-        "light" | "dark" | "system" => preferences.mode,
-        _ => DEFAULT_THEME_MODE.to_string(),
+fn get_theme_mode(settings: tauri::State<'_, SettingsStore>) -> String {
+    match settings.theme().mode.as_str() {
+        "light" => "light",
+        "dark" => "dark",
+        _ => "system",
     }
+    .to_string()
 }
 
 #[tauri::command]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Tauri command state and app handles are extracted by value."
-)]
 fn set_theme_mode(
-    app: tauri::AppHandle,
     mode: String,
-    settings: tauri::State<'_, ThemeSettings>,
+    settings: tauri::State<'_, SettingsStore>,
 ) -> Result<String, String> {
-    let next_mode = match mode.as_str() {
-        "light" | "dark" | "system" => mode,
-        _ => DEFAULT_THEME_MODE.to_string(),
-    };
-    let mut preferences = load_theme_preferences(&app, &settings);
-    preferences.mode.clone_from(&next_mode);
-
-    save_theme_preferences(&app, &settings, &preferences)?;
-
-    Ok(next_mode)
+    settings
+        .set_theme_mode(mode)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Tauri command arguments, state, and app handles are extracted by value."
-)]
 fn get_theme_preset(
-    app: tauri::AppHandle,
     supported_presets: Vec<String>,
     default_preset: String,
-    settings: tauri::State<'_, ThemeSettings>,
+    settings: tauri::State<'_, SettingsStore>,
 ) -> String {
-    let preferences = load_theme_preferences(&app, &settings);
-    let fallback = if supported_presets
-        .iter()
-        .any(|preset| preset == &default_preset)
-    {
-        default_preset
-    } else {
-        supported_presets
-            .first()
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_THEME_PRESET.to_string())
-    };
-
-    if supported_presets
-        .iter()
-        .any(|supported| supported == &preferences.preset)
-    {
-        preferences.preset
-    } else {
-        fallback
-    }
+    settings.theme_preset(&supported_presets, &default_preset)
 }
 
 #[tauri::command]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Tauri command arguments are extracted by value."
-)]
 fn set_theme_preset(
-    app: tauri::AppHandle,
     preset: String,
     supported_presets: Vec<String>,
     default_preset: String,
-    settings: tauri::State<'_, ThemeSettings>,
+    settings: tauri::State<'_, SettingsStore>,
 ) -> Result<String, String> {
-    let fallback = if supported_presets
-        .iter()
-        .any(|supported| supported == &default_preset)
-    {
-        default_preset
-    } else {
-        supported_presets
-            .first()
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_THEME_PRESET.to_string())
-    };
-    let next_preset = if supported_presets
-        .iter()
-        .any(|supported| supported == &preset)
-    {
-        preset
-    } else {
-        fallback
-    };
-    let mut preferences = load_theme_preferences(&app, &settings);
-    preferences.preset.clone_from(&next_preset);
-
-    save_theme_preferences(&app, &settings, &preferences)?;
-
-    Ok(next_preset)
+    settings
+        .set_theme_preset(preset, &supported_presets, &default_preset)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -216,48 +95,23 @@ fn get_license_html() -> String {
 }
 
 #[tauri::command]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Tauri command state and app handles are extracted by value."
-)]
-fn get_download_input_settings(
-    app: tauri::AppHandle,
-    settings: tauri::State<'_, InputSettings>,
-) -> DownloadInputSettings {
-    load_download_input_settings(&app, &settings)
+fn get_download_input_settings(settings: tauri::State<'_, SettingsStore>) -> DownloadInputSettings {
+    settings.download_inputs()
 }
 
 #[tauri::command]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Tauri command state and app handles are extracted by value."
-)]
 fn set_download_input_settings(
-    app: tauri::AppHandle,
     input_settings: DownloadInputSettings,
-    settings: tauri::State<'_, InputSettings>,
+    settings: tauri::State<'_, SettingsStore>,
 ) -> Result<DownloadInputSettings, String> {
-    let next_settings = DownloadInputSettings {
-        directory: if input_settings.directory.trim().is_empty() {
-            DEFAULT_DOWNLOAD_DIRECTORY.to_string()
-        } else {
-            input_settings.directory
-        },
-        cookies_path: if input_settings.cookies_path.trim().is_empty() {
-            DEFAULT_COOKIES_PATH.to_string()
-        } else {
-            input_settings.cookies_path
-        },
-    };
-
-    save_download_input_settings(&app, &settings, &next_settings)?;
-
-    Ok(next_settings)
+    settings
+        .set_download_inputs(input_settings)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn yt_dlp_version(app: tauri::AppHandle) -> Result<YtDlpCommandOutput, String> {
-    YtDlpRunner::from_environment_or_bundle(app)
+async fn yt_dlp_version() -> Result<YtDlpCommandOutput, String> {
+    YtDlpRunner::from_environment_or_bundle()
         .map_err(|error| error.to_string())?
         .run(["--version"])
         .await
@@ -273,31 +127,41 @@ async fn run_yt_dlp(
     args: Vec<String>,
     advanced_subtitle_pipeline: bool,
 ) -> Result<YtDlpCommandOutput, String> {
-    let emit_app = app.clone();
-    let emit_run_id = run_id.clone();
-    let plugin_dirs = yt_dlp_plugin_dirs(&app);
-    let runner = YtDlpRunner::from_environment_or_bundle(app.clone())
-        .map_err(|error| error.to_string())?
-        .with_plugin_dirs(plugin_dirs);
-    let on_chunk = move |stream, chunk: &str| {
-        let _ = emit_app.emit(
-            "yt-dlp-output",
-            YtDlpOutputChunk {
-                run_id: emit_run_id.clone(),
-                stream,
-                chunk: chunk.to_string(),
-            },
-        );
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let output_app = app.clone();
+    let output_task = tokio::spawn(async move {
+        while let Some(event) = receiver.recv().await {
+            if let DownloadEvent::Output { stream, chunk } = event {
+                let _ = output_app.emit(
+                    "yt-dlp-output",
+                    YtDlpOutputChunk {
+                        run_id: run_id.clone(),
+                        stream,
+                        chunk,
+                    },
+                );
+            }
+        }
+    });
+    let request = DownloadRequest {
+        preset_id,
+        link,
+        args,
+        advanced_subtitle_pipeline,
+        plugin_dirs: yt_dlp_plugin_dirs(&app),
     };
+    let result = app
+        .state::<DownloadService>()
+        .run(request, sender)
+        .await
+        .map_err(|error| error.to_string());
+    let _ = output_task.await;
+    result
+}
 
-    if advanced_subtitle_pipeline && presets::is_youtube_video_preset(preset_id) {
-        subtitle_pipeline::run_youtube_video_download(app, runner, args, link, on_chunk).await
-    } else {
-        runner
-            .run_streaming(args, on_chunk)
-            .await
-            .map_err(|error| error.to_string())
-    }
+#[tauri::command]
+fn cancel_yt_dlp(service: tauri::State<'_, DownloadService>) {
+    service.cancel();
 }
 
 #[tauri::command]
@@ -311,10 +175,6 @@ fn download_preset_input_fields() -> Vec<presets::PresetInputField> {
 }
 
 #[tauri::command]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Tauri command arguments are extracted by value."
-)]
 fn preview_download_preset(
     preset_id: PresetId,
     input: DownloadPresetInput,
@@ -327,119 +187,6 @@ fn yt_dlp_plugin_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     yt_dlp::candidate_plugin_dirs(resource_dir.as_deref())
 }
 
-fn theme_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    app_settings_path(app, THEME_SETTINGS_FILE_NAME)
-}
-
-fn input_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    app_settings_path(app, INPUT_SETTINGS_FILE_NAME)
-}
-
-fn app_settings_path(app: &tauri::AppHandle, file_name: &str) -> Result<PathBuf, String> {
-    let settings_directory = app
-        .path()
-        .app_config_dir()
-        .map_err(|error| format!("failed to resolve app settings directory: {error}"))?;
-    fs::create_dir_all(&settings_directory).map_err(|error| {
-        format!(
-            "failed to create app settings directory at {}: {error}",
-            settings_directory.display()
-        )
-    })?;
-
-    Ok(settings_directory.join(file_name))
-}
-
-fn load_theme_preferences(
-    app: &tauri::AppHandle,
-    settings: &tauri::State<'_, ThemeSettings>,
-) -> ThemePreferences {
-    let preferences = theme_settings_path(app)
-        .ok()
-        .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|settings_json| serde_json::from_str::<ThemePreferences>(&settings_json).ok())
-        .unwrap_or_else(|| {
-            settings.preferences.lock().map_or_else(
-                |_| ThemePreferences::default(),
-                |preferences| preferences.clone(),
-            )
-        });
-
-    if let Ok(mut saved_preferences) = settings.preferences.lock() {
-        saved_preferences.clone_from(&preferences);
-    }
-
-    preferences
-}
-
-fn save_theme_preferences(
-    app: &tauri::AppHandle,
-    settings: &tauri::State<'_, ThemeSettings>,
-    preferences: &ThemePreferences,
-) -> Result<(), String> {
-    let settings_path = theme_settings_path(app)?;
-    let settings_json = serde_json::to_string_pretty(&preferences)
-        .map_err(|error| format!("failed to serialize theme settings: {error}"))?;
-    fs::write(&settings_path, settings_json).map_err(|error| {
-        format!(
-            "failed to write theme settings to {}: {error}",
-            settings_path.display()
-        )
-    })?;
-
-    if let Ok(mut saved_preferences) = settings.preferences.lock() {
-        saved_preferences.clone_from(preferences);
-    }
-
-    Ok(())
-}
-
-fn load_download_input_settings(
-    app: &tauri::AppHandle,
-    settings: &tauri::State<'_, InputSettings>,
-) -> DownloadInputSettings {
-    let input_settings = input_settings_path(app)
-        .ok()
-        .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|settings_json| {
-            serde_json::from_str::<DownloadInputSettings>(&settings_json).ok()
-        })
-        .unwrap_or_else(|| {
-            settings.values.lock().map_or_else(
-                |_| DownloadInputSettings::default(),
-                |saved_settings| saved_settings.clone(),
-            )
-        });
-
-    if let Ok(mut saved_settings) = settings.values.lock() {
-        saved_settings.clone_from(&input_settings);
-    }
-
-    input_settings
-}
-
-fn save_download_input_settings(
-    app: &tauri::AppHandle,
-    settings: &tauri::State<'_, InputSettings>,
-    input_settings: &DownloadInputSettings,
-) -> Result<(), String> {
-    let settings_path = input_settings_path(app)?;
-    let settings_json = serde_json::to_string_pretty(input_settings)
-        .map_err(|error| format!("failed to serialize input settings: {error}"))?;
-    fs::write(&settings_path, settings_json).map_err(|error| {
-        format!(
-            "failed to write input settings to {}: {error}",
-            settings_path.display()
-        )
-    })?;
-
-    if let Ok(mut saved_settings) = settings.values.lock() {
-        saved_settings.clone_from(input_settings);
-    }
-
-    Ok(())
-}
-
 #[cfg(desktop)]
 fn focus_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -449,16 +196,11 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
-fn stop_pot_server(app: &tauri::AppHandle) {
-    app.state::<pot_server::PotServer>().stop();
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// Runs the Tauri application.
+/// Run the compatibility Tauri interface during the terminal migration.
 ///
 /// # Panics
-///
-/// Panics if Tauri fails to initialize or run the application.
+/// Panics if Tauri fails to initialize or run.
 pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -466,17 +208,7 @@ pub fn run() {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        builder = builder
-            .setup(|app| {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(error) = update(handle).await {
-                        eprintln!("failed to check for updates: {error}");
-                    }
-                });
-                Ok(())
-            })
-            .plugin(tauri_plugin_updater::Builder::new().build());
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
 
     #[cfg(desktop)]
@@ -487,13 +219,21 @@ pub fn run() {
     }
 
     builder
-        .manage(ThemeSettings::default())
-        .manage(InputSettings::default())
-        .manage(pot_server::PotServer::default())
+        .manage(DownloadService::default())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            pot_server::PotServer::start_async(app.handle().clone());
+            let directory = app.path().app_config_dir()?;
+            app.manage(SettingsStore::new(directory));
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = update(handle).await {
+                        eprintln!("failed to check for updates: {error}");
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -507,21 +247,20 @@ pub fn run() {
             set_download_input_settings,
             yt_dlp_version,
             run_yt_dlp,
+            cancel_yt_dlp,
             download_presets,
             download_preset_input_fields,
             preview_download_preset
         ])
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
+        .expect("error while building Tauri application")
         .run(|app, event| match event {
             tauri::RunEvent::ExitRequested { .. }
             | tauri::RunEvent::Exit
             | tauri::RunEvent::WindowEvent {
                 event: tauri::WindowEvent::CloseRequested { .. },
                 ..
-            } => {
-                stop_pot_server(app);
-            }
+            } => app.state::<DownloadService>().stop(),
             _ => {}
         });
 }

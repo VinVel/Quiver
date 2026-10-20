@@ -77,6 +77,7 @@ pub struct PresetCommandPreview {
     pub pending_integrations: Vec<&'static str>,
 }
 
+#[must_use]
 pub fn all_presets() -> [DownloadPreset; 8] {
     [
         preset(
@@ -138,6 +139,7 @@ pub fn all_presets() -> [DownloadPreset; 8] {
     ]
 }
 
+#[must_use]
 pub fn interactive_input_fields() -> [PresetInputField; 3] {
     [
         PresetInputField {
@@ -164,6 +166,10 @@ pub fn interactive_input_fields() -> [PresetInputField; 3] {
     ]
 }
 
+/// Build the command preview for a preset and supplied inputs.
+///
+/// # Errors
+/// Returns an error when the preset cannot be found or required input is invalid.
 pub fn command_preview(
     preset_id: PresetId,
     input: &DownloadPresetInput,
@@ -184,6 +190,7 @@ pub fn command_preview(
     })
 }
 
+#[must_use]
 pub const fn is_youtube_video_preset(preset_id: PresetId) -> bool {
     matches!(
         preset_id,

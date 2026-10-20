@@ -6,12 +6,10 @@ use std::{
     fmt::Write,
     fs,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::AppHandle;
-use tauri_plugin_shell::ShellExt;
+use tokio::process::Command;
 
 const YT_SUB_CONVERTER_BINARY_NAME: &str = "ytsubconverter";
 
@@ -27,8 +25,27 @@ struct AttachedPicture {
     path: PathBuf,
 }
 
+struct MediaRestoreGuard<'a> {
+    media_path: &'a Path,
+    temp_media_path: &'a Path,
+    pictures: &'a [AttachedPicture],
+    completed: bool,
+}
+
+impl Drop for MediaRestoreGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            let _ = restore_original_media(self.media_path, self.temp_media_path);
+        }
+        remove_attached_picture_files(self.pictures);
+    }
+}
+
+/// Download video with converted visual subtitles.
+///
+/// # Errors
+/// Returns an error when subtitle conversion, download, or remux fails.
 pub async fn run_youtube_video_download<F>(
-    app: AppHandle,
     runner: YtDlpRunner,
     args: Vec<String>,
     link: String,
@@ -39,15 +56,16 @@ where
 {
     let on_chunk = Arc::new(on_chunk);
     let subtitle_dir = create_subtitle_dir()?;
+    let subtitle_path = subtitle_dir.path();
     emit_pipeline_log(
         &on_chunk,
         &format!(
             "Downloading YouTube srv3 subtitles to {}.\n",
-            path_name(&subtitle_dir)
+            path_name(subtitle_path)
         ),
     );
     let subtitle_output = runner
-        .run(subtitle_download_args(&args, &link, &subtitle_dir))
+        .run(subtitle_download_args(&args, &link, subtitle_path))
         .await
         .map_err(|error| error.to_string())?;
     emit_command_output(&on_chunk, &subtitle_output);
@@ -55,22 +73,24 @@ where
     if !subtitle_output.success {
         let mut output = subtitle_output;
         output.stderr.push_str("\nSubtitle download failed.");
-        let _ = fs::remove_dir_all(&subtitle_dir);
         return Ok(output);
     }
 
-    let srv3_files = collect_files_with_extension(&subtitle_dir, "srv3")?;
+    let srv3_files = collect_files_with_extension(subtitle_path, "srv3")?;
     emit_pipeline_log(
         &on_chunk,
         &format!("Found {} srv3 subtitle file(s).\n", srv3_files.len()),
     );
-    let conversion_app = app.clone();
-    let conversion_on_chunk = Arc::clone(&on_chunk);
-    let conversion_task = tauri::async_runtime::spawn(async move {
-        convert_subtitles(conversion_app, srv3_files, conversion_on_chunk).await
-    });
+    let converted_subtitles = convert_subtitles(srv3_files, Arc::clone(&on_chunk)).await?;
+    emit_pipeline_log(
+        &on_chunk,
+        &format!(
+            "Converted {} ass subtitle file(s).\n",
+            converted_subtitles.len()
+        ),
+    );
 
-    let downloaded_paths_file = subtitle_dir.join("downloaded-media-paths.txt");
+    let downloaded_paths_file = subtitle_path.join("downloaded-media-paths.txt");
     emit_pipeline_log(&on_chunk, "Recording final yt-dlp output file name(s).\n");
     let streaming_on_chunk = Arc::clone(&on_chunk);
     let main_output = runner
@@ -83,19 +103,7 @@ where
         .await
         .map_err(|error| error.to_string())?;
 
-    let converted_subtitles = conversion_task
-        .await
-        .map_err(|error| format!("subtitle conversion task failed: {error}"))??;
-    emit_pipeline_log(
-        &on_chunk,
-        &format!(
-            "Converted {} ass subtitle file(s).\n",
-            converted_subtitles.len()
-        ),
-    );
-
     if !main_output.success || converted_subtitles.is_empty() {
-        let _ = fs::remove_dir_all(&subtitle_dir);
         return Ok(with_pipeline_output(main_output, &subtitle_output, ""));
     }
 
@@ -108,7 +116,6 @@ where
         ),
     );
     if media_paths.is_empty() {
-        let _ = fs::remove_dir_all(&subtitle_dir);
         return Ok(with_pipeline_output(
             main_output,
             &subtitle_output,
@@ -120,8 +127,6 @@ where
     for media_path in media_paths {
         remux_subtitles(&media_path, &converted_subtitles, &mut remux_log, &on_chunk).await?;
     }
-
-    let _ = fs::remove_dir_all(&subtitle_dir);
 
     Ok(with_pipeline_output(
         main_output,
@@ -147,6 +152,7 @@ fn subtitle_download_args(args: &[String], link: &str, subtitle_dir: &Path) -> V
     copy_option_with_value(args, "--cookies", &mut subtitle_args);
     copy_option_with_value(args, "--compat-options", &mut subtitle_args);
     copy_option_with_value(args, "--extractor-args", &mut subtitle_args);
+    copy_option_with_value(args, "--impersonate", &mut subtitle_args);
     subtitle_args.push(link.trim().to_string());
     subtitle_args
 }
@@ -175,7 +181,6 @@ fn main_download_args(args: Vec<String>, downloaded_paths_file: &Path) -> Vec<St
 }
 
 async fn convert_subtitles(
-    app: AppHandle,
     srv3_files: Vec<PathBuf>,
     on_chunk: Arc<impl Fn(YtDlpOutputStream, &str) + Send + Sync + 'static>,
 ) -> Result<Vec<SubtitleTrack>, String> {
@@ -194,7 +199,7 @@ async fn convert_subtitles(
                 path_name(&ass_file)
             ),
         );
-        run_ytsubconverter(&app, &srv3_file, &ass_file).await?;
+        run_ytsubconverter(&srv3_file, &ass_file).await?;
         subtitles.push(SubtitleTrack {
             language,
             path: ass_file,
@@ -204,16 +209,16 @@ async fn convert_subtitles(
     Ok(subtitles)
 }
 
-async fn run_ytsubconverter(app: &AppHandle, input: &Path, output: &Path) -> Result<(), String> {
-    let command_output = app
-        .shell()
-        .sidecar(YT_SUB_CONVERTER_BINARY_NAME)
-        .map_err(|error| format!("failed to prepare YTSubConverter sidecar: {error}"))?
+async fn run_ytsubconverter(input: &Path, output: &Path) -> Result<(), String> {
+    let binary = crate::yt_dlp::sidecar_path(YT_SUB_CONVERTER_BINARY_NAME)
+        .ok_or_else(|| "YTSubConverter sidecar is missing".to_string())?;
+    let command_output = Command::new(binary)
         .args([
             "--visual",
             &input.display().to_string(),
             &output.display().to_string(),
         ])
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|error| format!("failed to run YTSubConverter: {error}"))?;
@@ -270,6 +275,12 @@ async fn remux_subtitles(
             temp_media_path.display()
         )
     })?;
+    let mut restore_guard = MediaRestoreGuard {
+        media_path,
+        temp_media_path: &temp_media_path,
+        pictures: &attached_pictures,
+        completed: false,
+    };
 
     emit_pipeline_log(on_chunk, "Running ffmpeg.\n");
     let ffmpeg_result = run_ffmpeg_remux(
@@ -295,13 +306,11 @@ async fn remux_subtitles(
                 path_name(media_path)
             );
             let _ = fs::remove_file(&temp_media_path);
-            remove_attached_picture_files(&attached_pictures);
+            restore_guard.completed = true;
             Ok(())
         }
         Ok(output) => {
             emit_process_output(on_chunk, "ffmpeg", &output);
-            let _ = restore_original_media(media_path, &temp_media_path);
-            remove_attached_picture_files(&attached_pictures);
             Err(format!(
                 "ffmpeg subtitle remux failed for {}: {}{}",
                 media_path.display(),
@@ -311,8 +320,6 @@ async fn remux_subtitles(
         }
         Err(error) => {
             emit_pipeline_log(on_chunk, &format!("{error}\n"));
-            let _ = restore_original_media(media_path, &temp_media_path);
-            remove_attached_picture_files(&attached_pictures);
             Err(error.to_string())
         }
     }
@@ -370,72 +377,70 @@ async fn run_ffmpeg_remux(
     existing_attachment_count: usize,
     attached_pictures: Vec<AttachedPicture>,
 ) -> Result<std::process::Output, YtDlpError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut command = Command::new(ffmpeg_path());
+    let mut command = Command::new(ffmpeg_path());
+    command
+        .arg("-y")
+        .arg("-i")
+        .arg(input_media)
+        .args(
+            subtitles
+                .iter()
+                .flat_map(|subtitle| [OsStr::new("-i"), subtitle.path.as_os_str()]),
+        )
+        .arg("-map")
+        .arg("0")
+        .arg("-map_metadata")
+        .arg("0")
+        .arg("-map_chapters")
+        .arg("0");
+
+    for picture in &attached_pictures {
         command
-            .arg("-y")
-            .arg("-i")
-            .arg(input_media)
-            .args(
-                subtitles
-                    .iter()
-                    .flat_map(|subtitle| [OsStr::new("-i"), subtitle.path.as_os_str()]),
-            )
             .arg("-map")
-            .arg("0")
-            .arg("-map_metadata")
-            .arg("0")
-            .arg("-map_chapters")
-            .arg("0");
+            .arg(format!("-0:v:{}", picture.video_index));
+    }
 
-        for picture in &attached_pictures {
-            command
-                .arg("-map")
-                .arg(format!("-0:v:{}", picture.video_index));
-        }
+    for index in 0..subtitles.len() {
+        command.arg("-map").arg((index + 1).to_string());
+    }
 
-        for index in 0..subtitles.len() {
-            command.arg("-map").arg((index + 1).to_string());
-        }
+    command
+        .arg("-c")
+        .arg("copy")
+        .arg("-max_interleave_delta")
+        .arg("0");
 
+    for (index, picture) in attached_pictures.iter().enumerate() {
+        let output_attachment_index = existing_attachment_count + index;
         command
-            .arg("-c")
-            .arg("copy")
-            .arg("-max_interleave_delta")
-            .arg("0");
+            .arg("-attach")
+            .arg(&picture.path)
+            .arg(format!("-metadata:s:t:{output_attachment_index}"))
+            .arg("mimetype=image/png")
+            .arg(format!("-metadata:s:t:{output_attachment_index}"))
+            .arg("filename=cover.png");
+    }
 
-        for (index, picture) in attached_pictures.iter().enumerate() {
-            let output_attachment_index = existing_attachment_count + index;
-            command
-                .arg("-attach")
-                .arg(&picture.path)
-                .arg(format!("-metadata:s:t:{output_attachment_index}"))
-                .arg("mimetype=image/png")
-                .arg(format!("-metadata:s:t:{output_attachment_index}"))
-                .arg("filename=cover.png");
-        }
-
-        for (index, subtitle) in subtitles.iter().enumerate() {
-            let output_subtitle_index = existing_subtitle_count + index;
-            command
-                .arg(format!("-metadata:s:s:{output_subtitle_index}"))
-                .arg(format!("language={}", subtitle.language))
-                .arg(format!("-metadata:s:s:{output_subtitle_index}"))
-                .arg(format!("title={}", subtitle.language))
-                .arg(format!("-metadata:s:s:{output_subtitle_index}"))
-                .arg(format!("handler_name={}", subtitle.language));
-        }
-
+    for (index, subtitle) in subtitles.iter().enumerate() {
+        let output_subtitle_index = existing_subtitle_count + index;
         command
-            .arg(output_media)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|error| YtDlpError::SpawnFailed(format!("failed to run ffmpeg: {error}")))
-    })
-    .await
-    .map_err(|error| YtDlpError::SpawnFailed(error.to_string()))?
+            .arg(format!("-metadata:s:s:{output_subtitle_index}"))
+            .arg(format!("language={}", subtitle.language))
+            .arg(format!("-metadata:s:s:{output_subtitle_index}"))
+            .arg(format!("title={}", subtitle.language))
+            .arg(format!("-metadata:s:s:{output_subtitle_index}"))
+            .arg(format!("handler_name={}", subtitle.language));
+    }
+
+    command
+        .arg(output_media)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|error| YtDlpError::SpawnFailed(format!("failed to run ffmpeg: {error}")))
 }
 
 async fn extract_attached_pictures(
@@ -449,29 +454,24 @@ async fn extract_attached_pictures(
         let picture_path = attached_picture_path(temp_media_path, video_index);
         let input_media = media_path.to_path_buf();
         let output_picture = picture_path.clone();
-        let output = tauri::async_runtime::spawn_blocking(move || {
-            Command::new(ffmpeg_path())
-                .arg("-y")
-                .arg("-i")
-                .arg(input_media)
-                .arg("-map")
-                .arg(format!("0:v:{video_index}"))
-                .arg("-frames:v")
-                .arg("1")
-                .arg("-c")
-                .arg("copy")
-                .arg(output_picture)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-        })
-        .await
-        .map_err(|error| format!("failed to join thumbnail extraction task: {error}"))
-        .and_then(|output| {
-            output
-                .map_err(|error| format!("failed to run ffmpeg for thumbnail extraction: {error}"))
-        });
+        let output = Command::new(ffmpeg_path())
+            .arg("-y")
+            .arg("-i")
+            .arg(input_media)
+            .arg("-map")
+            .arg(format!("0:v:{video_index}"))
+            .arg("-frames:v")
+            .arg("1")
+            .arg("-c")
+            .arg("copy")
+            .arg(output_picture)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .output()
+            .await
+            .map_err(|error| format!("failed to run ffmpeg for thumbnail extraction: {error}"));
 
         let output = match output {
             Ok(output) => output,
@@ -513,25 +513,23 @@ fn remove_attached_picture_files(pictures: &[AttachedPicture]) {
 
 async fn attached_picture_video_indices(media_path: &Path) -> Result<Vec<usize>, String> {
     let media_path = media_path.to_path_buf();
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        Command::new(ffprobe_path())
-            .arg("-v")
-            .arg("error")
-            .arg("-select_streams")
-            .arg("v")
-            .arg("-show_entries")
-            .arg("stream_disposition=attached_pic")
-            .arg("-of")
-            .arg("csv=p=0")
-            .arg(media_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-    })
-    .await
-    .map_err(|error| format!("failed to join ffprobe task: {error}"))?
-    .map_err(|error| format!("failed to run ffprobe: {error}"))?;
+    let output = Command::new(ffprobe_path())
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v")
+        .arg("-show_entries")
+        .arg("stream_disposition=attached_pic")
+        .arg("-of")
+        .arg("csv=p=0")
+        .arg(media_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|error| format!("failed to run ffprobe: {error}"))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -569,25 +567,23 @@ async fn stream_count(
     stream_description: &'static str,
 ) -> Result<usize, String> {
     let media_path = media_path.to_path_buf();
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        Command::new(ffprobe_path())
-            .arg("-v")
-            .arg("error")
-            .arg("-select_streams")
-            .arg(stream_selector)
-            .arg("-show_entries")
-            .arg("stream=index")
-            .arg("-of")
-            .arg("csv=p=0")
-            .arg(media_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-    })
-    .await
-    .map_err(|error| format!("failed to join ffprobe task: {error}"))?
-    .map_err(|error| format!("failed to run ffprobe: {error}"))?;
+    let output = Command::new(ffprobe_path())
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg(stream_selector)
+        .arg("-show_entries")
+        .arg("stream=index")
+        .arg("-of")
+        .arg("csv=p=0")
+        .arg(media_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|error| format!("failed to run ffprobe: {error}"))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -665,15 +661,11 @@ fn temp_media_path(media_path: &Path) -> Result<PathBuf, String> {
     Ok(candidate)
 }
 
-fn create_subtitle_dir() -> Result<PathBuf, String> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("system clock is before UNIX epoch: {error}"))?
-        .as_millis();
-    let directory = std::env::temp_dir().join(format!("quiver-ytsubs-{timestamp}"));
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("failed to create {}: {error}", directory.display()))?;
-    Ok(directory)
+fn create_subtitle_dir() -> Result<tempfile::TempDir, String> {
+    tempfile::Builder::new()
+        .prefix("quiver-ytsubs-")
+        .tempdir()
+        .map_err(|error| format!("failed to create temporary subtitle directory: {error}"))
 }
 
 fn with_pipeline_output(
@@ -691,7 +683,10 @@ fn with_pipeline_output(
 
 #[cfg(test)]
 mod tests {
-    use super::{main_download_args, parse_attached_picture_video_indices, subtitle_download_args};
+    use super::{
+        MediaRestoreGuard, main_download_args, parse_attached_picture_video_indices,
+        subtitle_download_args,
+    };
     use std::path::Path;
 
     #[test]
@@ -727,5 +722,27 @@ mod tests {
     #[test]
     fn identifies_attached_picture_video_streams_by_video_stream_index() {
         assert_eq!(parse_attached_picture_video_indices("0\n1\n0\n1\n"), [1, 3]);
+    }
+
+    #[test]
+    fn restores_original_media_if_remux_is_interrupted() {
+        let directory = tempfile::tempdir().expect("create temporary directory");
+        let media = directory.path().join("video.mkv");
+        let original = directory.path().join("video.mkv.quiver-temp");
+        std::fs::write(&original, b"original").expect("write original media");
+        std::fs::write(&media, b"partial").expect("write partial remux");
+        {
+            let _guard = MediaRestoreGuard {
+                media_path: &media,
+                temp_media_path: &original,
+                pictures: &[],
+                completed: false,
+            };
+        }
+        assert_eq!(
+            std::fs::read(&media).expect("read restored media"),
+            b"original"
+        );
+        assert!(!original.exists());
     }
 }
