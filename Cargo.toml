@@ -1,0 +1,29 @@
+[package]
+name = "quiver"
+version = "0.2.1"
+description = "A terminal interface for yt-dlp"
+authors = ["VinVel"]
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/VinVel/Quiver"
+build = "build.rs"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+significant_drop_tightening = "warn"
+redundant_pub_crate = "warn"
+redundant_clone = "warn"
+needless_collect = "warn"
+useless_let_if_seq = "warn"
+equatable_if_let = "warn"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[lib]
+name = "quiver_lib"
+
+[[bin]]
+name = "quiver"
+path = "src/main.rs"

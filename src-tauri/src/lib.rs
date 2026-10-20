@@ -1,7 +1,11 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+#[path = "../../src/pot_server.rs"]
 mod pot_server;
+#[path = "../../src/presets.rs"]
 mod presets;
+#[path = "../../src/subtitle_pipeline.rs"]
 mod subtitle_pipeline;
+#[path = "../../src/yt_dlp.rs"]
 mod yt_dlp;
 
 use presets::{DownloadPreset, DownloadPresetInput, PresetCommandPreview, PresetId};
