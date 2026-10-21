@@ -9,7 +9,32 @@ permissions:
   contents: read
 
 jobs:
-  publish-tauri:
+  create-release:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@main
+        with:
+          version: "latest"
+
+      - name: Check release version and changelog
+        run: uv run --no-project scripts/check_release_tag.py "${{ github.ref_name }}"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release create "${{ github.ref_name }}" --draft --title "Quiver ${{ github.ref_name }}" --notes-file "changelog/${{ github.ref_name }}.md"
+          fi
+
+  publish-archives:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -19,34 +44,26 @@ jobs:
           - name: Windows x64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
-            upload_tauri_updater: true
 
           - name: Windows arm64
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
-            upload_tauri_updater: true
 
           - name: macOS Intel
             runner: macos-26-intel
             target: x86_64-apple-darwin
-            upload_tauri_updater: true
 
           - name: macOS arm64
             runner: macos-26
             target: aarch64-apple-darwin
-            upload_tauri_updater: true
 
           - name: Linux x64 GNU
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            upload_tauri_updater: false
-            appimage_update_info: gh-releases-zsync|VinVel|Quiver|latest|Quiver_*_amd64.AppImage.zsync
 
           - name: Linux arm64 GNU
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-            upload_tauri_updater: false
-            appimage_update_info: gh-releases-zsync|VinVel|Quiver|latest|Quiver_*_aarch64.AppImage.zsync
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
@@ -56,17 +73,12 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install uv for yt-dlp source build
+      - name: Install uv
         uses: astral-sh/setup-uv@main
         with:
           version: "latest"
@@ -82,148 +94,48 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install Minisign-compatible signing tool
+        run: cargo binstall rsign2@0.6.6 --no-confirm
+
       - name: Install .NET SDK
         if: ${{ !(matrix.name == 'Windows x64' || matrix.name == 'Windows arm64') }}
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
-      - name: install dependencies (Linux only)
+      - name: Install native build dependencies (Linux only)
         if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux arm64 GNU' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            file \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            pkg-config \
-            wget \
-            xdg-utils \
-            patchelf \
-            rpm \
-            gnupg \
-            zsync
+          sudo apt-get install -y build-essential curl libssl-dev pkg-config
 
-      - name: Install frontend dependencies and build
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
-      
-      - name: Load release changelog
-        id: changelog
+      - name: Build release binaries
+        run: cargo build --release --locked --target ${{ matrix.target }} --bins
+
+      - name: Test release binaries
+        run: cargo test --release --locked --target ${{ matrix.target }}
+
+      - name: Assemble release archive
+        run: uv run --no-project scripts/package_release.py --target ${{ matrix.target }}
+
+      - name: Sign and verify release archive
         shell: pwsh
+        env:
+          QUIVER_MINISIGN_SECRET_KEY: ${{ secrets.QUIVER_MINISIGN_SECRET_KEY }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          $path = Join-Path "changelog" "$tag.md"
+          $archive = (Get-ChildItem dist -Filter "quiver-*-${{ matrix.target }}.txz" | Select-Object -First 1).FullName
+          if (-not $archive) { throw "Missing release archive" }
+          uv run --no-project scripts/sign_release.py --archive $archive
+          uv run --no-project scripts/verify_binstall.py --archive $archive --target ${{ matrix.target }}
 
-          if (-not (Test-Path -LiteralPath $path)) {
-            throw "Missing changelog file: $path"
-          }
-
-          $delimiter = [guid]::NewGuid().ToString()
-          "body<<$delimiter" >> $env:GITHUB_OUTPUT
-          Get-Content -LiteralPath $path -Raw >> $env:GITHUB_OUTPUT
-          "$delimiter" >> $env:GITHUB_OUTPUT
-
-      - name: import windows certificate
-        if: ${{ matrix.name == 'Windows x64' || matrix.name == 'Windows arm64' }}
+      - name: Upload signed archive
+        shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          New-Item -ItemType directory -Path certificate
-          Set-Content -Path certificate/tempCert.txt -Value $env:WINDOWS_CERTIFICATE
-          certutil -decode certificate/tempCert.txt certificate/certificate.pfx
-          Remove-Item -path certificate -include tempCert.txt
-          Import-PfxCertificate -FilePath certificate/certificate.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText)
-      
-      - name: Import GPG Key
-        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux arm64 GNU' }}
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          GPG_KEY_ID: ${{ secrets.GPG_PRIVATE_KEY_ID }}
-        run: |
-          install -m 700 -d ~/.gnupg
-          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
-          gpg --batch --list-secret-keys --keyid-format LONG "$GPG_KEY_ID"
-
-      - name: Build Release Bundles
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # RPM Signing
-          TAURI_SIGNING_RPM_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          TAURI_SIGNING_RPM_KEY_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          # Ad hoc signing identity
-          APPLE_SIGNING_IDENTITY: '-'
-          # Updater Signing
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Appimage
-          SIGN: 1
-          SIGN_KEY: ${{ secrets.GPG_PRIVATE_KEY_ID}}
-          APPIMAGETOOL_SIGN_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE}}
-          APPIMAGETOOL_FORCE_SIGN: 1
-          APPIMAGE_EXTRACT_AND_RUN: 1
-          # Consumed by linuxdeploy's AppImage output plugin, which Tauri shells out to.
-          # This embeds update metadata for tools such as Gear Lever/AppImageUpdate.
-          LDAI_UPDATE_INFORMATION: ${{ matrix.appimage_update_info }}
-          NO_STRIP: true
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Quiver v__VERSION__'
-          releaseBody: ${{ steps.changelog.outputs.body }}
-          releaseDraft: true
-          prerelease: false
-          uploadUpdaterJson: ${{ matrix.upload_tauri_updater }}
-          uploadUpdaterSignatures: ${{ matrix.upload_tauri_updater }}
-          args: --target ${{ matrix.target }}
-
-      - name: Verify and upload AppImage update metadata
-        if: ${{ matrix.name == 'Linux x64 GNU' || matrix.name == 'Linux arm64 GNU' }}
-        env:
-          EXPECTED_UPDATE_INFORMATION: ${{ matrix.appimage_update_info }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPIMAGE_BUNDLE_DIR: src-tauri/target/${{ matrix.target }}/release/bundle/appimage
         run: |
-          if [ ! -d "$APPIMAGE_BUNDLE_DIR" ]; then
-            echo "AppImage bundle directory does not exist: $APPIMAGE_BUNDLE_DIR"
-            exit 1
-          fi
-
-          appimage="$(find "$APPIMAGE_BUNDLE_DIR" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
-
-          if [ -z "$appimage" ]; then
-            echo "No AppImage bundle was generated."
-            exit 1
-          fi
-
-          update_information="$("$appimage" --appimage-updateinformation)"
-
-          if [ "$update_information" != "$EXPECTED_UPDATE_INFORMATION" ]; then
-            echo "Unexpected AppImage update information:"
-            echo "$update_information"
-            echo "Expected:"
-            echo "$EXPECTED_UPDATE_INFORMATION"
-            exit 1
-          fi
-
-          zsync_name="$(basename "$appimage").zsync"
-          zsync="src-tauri/$zsync_name"
-
-          if [ ! -f "$zsync" ]; then
-            zsync="$APPIMAGE_BUNDLE_DIR/$zsync_name"
-          fi
-
-          if [ ! -f "$zsync" ]; then
-            echo "Missing AppImage zsync sidecar: $zsync_name"
-            echo "Checked src-tauri and $APPIMAGE_BUNDLE_DIR."
-            exit 1
-          fi
-
-          gh release upload "${{ github.ref_name }}" "$zsync" --clobber
+          $archive = (Get-ChildItem dist -Filter "quiver-*-${{ matrix.target }}.txz" | Select-Object -First 1).FullName
+          if (-not $archive) { throw "Missing release archive" }
+          gh release upload "${{ github.ref_name }}" $archive "$archive.sig" --clobber

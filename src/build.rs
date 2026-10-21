@@ -40,6 +40,7 @@ fn main() {
 fn configure_build_tracking() {
     println!("cargo:rerun-if-env-changed=TARGET");
     println!("cargo:rerun-if-changed=src/build.rs");
+    println!("cargo:rerun-if-changed=.python-version");
     for source in [
         "YTSubConverter/YTSubConverter.Shared",
         "YTSubConverter/YTSubConverter.UI.Linux",
@@ -347,7 +348,7 @@ mod yt_dlp {
         let out_dir =
             PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
         let build_dir = prepare_yt_dlp_build_directory(&yt_dlp_source_dir, &out_dir);
-        let python = prepare_yt_dlp_build_environment(&build_dir, &target, python_request);
+        let python = prepare_yt_dlp_build_environment(&build_dir, &target, &python_request);
         generate_yt_dlp_lazy_extractors(&build_dir, &python);
         let built_binary = build_yt_dlp_executable(&build_dir, &python);
         verify_yt_dlp_executable(&built_binary);
@@ -518,16 +519,18 @@ mod yt_dlp {
             .env("UV_PYTHON_INSTALL_DIR", out_dir().join("uv-python"));
     }
 
-    fn yt_dlp_python_request(target: &str) -> &'static str {
-        match target {
-            "aarch64-apple-darwin" => "cpython-3.12-macos-aarch64-none",
-            "aarch64-unknown-linux-gnu" => "cpython-3.12-linux-aarch64-gnu",
-            "x86_64-apple-darwin" => "cpython-3.12-macos-x86_64-none",
-            "x86_64-unknown-linux-gnu" => "cpython-3.12-linux-x86_64-gnu",
-            "aarch64-pc-windows-msvc" => "cpython-3.12-windows-aarch64-none",
-            "x86_64-pc-windows-msvc" => "cpython-3.12-windows-x86_64-none",
+    fn yt_dlp_python_request(target: &str) -> String {
+        let version = include_str!("../.python-version").trim();
+        let platform = match target {
+            "aarch64-apple-darwin" => "macos-aarch64-none",
+            "aarch64-unknown-linux-gnu" => "linux-aarch64-gnu",
+            "x86_64-apple-darwin" => "macos-x86_64-none",
+            "x86_64-unknown-linux-gnu" => "linux-x86_64-gnu",
+            "aarch64-pc-windows-msvc" => "windows-aarch64-none",
+            "x86_64-pc-windows-msvc" => "windows-x86_64-none",
             unsupported => panic!("yt-dlp Python is not configured for target {unsupported}"),
-        }
+        };
+        format!("cpython-{version}-{platform}")
     }
 
     fn verify_yt_dlp_python_architecture(build_dir: &Path, python: &Path, target: &str) {

@@ -8,6 +8,16 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/VinVel/Quiver"
 build = "src/build.rs"
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.txz"
+pkg-fmt = "txz"
+bin-dir = "{ bin }{ binary-ext }"
+disabled-strategies = ["quick-install", "compile"]
+
+[package.metadata.binstall.signing]
+algorithm = "minisign"
+pubkey = "RWQWH4Bng1t+D8jgYxgWwdut97mwdkxWAXpze9CwX4M/jWSpNAy54QU+"
+
 [lints.clippy]
 all = "warn"
 pedantic = "warn"

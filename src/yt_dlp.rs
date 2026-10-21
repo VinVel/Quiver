@@ -283,7 +283,7 @@ fn candidate_sidecar_paths(name: &str) -> Vec<PathBuf> {
     {
         paths.push(directory.join(executable_name(&format!("quiver-{name}"))));
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, test))]
     if let Some(path) = staged_sidecar_path(name) {
         paths.push(path);
     }
@@ -390,7 +390,7 @@ fn macos_homebrew_tool(name: &'static str) -> Result<PathBuf, YtDlpError> {
 }
 
 #[must_use]
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn staged_sidecar_path(name: &str) -> Option<PathBuf> {
     let manifest = PathBuf::from(option_env!("QUIVER_SIDECAR_MANIFEST")?);
     Some(

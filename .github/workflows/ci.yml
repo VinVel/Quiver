@@ -47,17 +47,12 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install uv for yt-dlp source build
+      - name: Install uv
         uses: astral-sh/setup-uv@main
         with:
           version: "latest"
@@ -73,6 +68,12 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install Minisign-compatible signing tool
+        run: cargo binstall rsign2@0.6.6 --no-confirm
+
       - name: Install .NET SDK
         if: ${{ !(matrix.name == 'Windows x64' || matrix.name == 'Windows arm64') }}
         uses: actions/setup-dotnet@v5
@@ -86,25 +87,11 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             curl \
-            file \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
             libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            pkg-config \
-            wget \
-            xdg-utils \
-            patchelf \
+            pkg-config
 
-      - name: Install frontend dependencies and build
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+      - name: Build TUI and sidecars
+        run: cargo build --locked --target ${{ matrix.target }} --bins
 
-      - name: Build Debug Bundles
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: --target ${{ matrix.target }} --debug --verbose --no-bundle --no-sign -- -vv
+      - name: Test TUI and sidecars
+        run: cargo test --locked --target ${{ matrix.target }}

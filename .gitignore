@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 /target
+.secrets/
+__pycache__/
 *.local
 
 # Editor directories and files
