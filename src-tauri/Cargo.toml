@@ -25,14 +25,6 @@ equatable_if_let = "warn"
 name = "quiver_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-[build-dependencies]
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
-sha2 = "0.10"
-tar = "0.4"
-tauri-build = { version = "2", features = [] }
-xz2 = "0.1"
-zip = { version = "8", default-features = false, features = ["deflate"] }
-
 [dependencies]
 quiver_core = { package = "quiver", path = ".." }
 tokio = { version = "1", features = ["sync"] }

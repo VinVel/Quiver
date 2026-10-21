@@ -8,8 +8,6 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[cfg(debug_assertions)]
-use std::fs;
 #[cfg(target_os = "macos")]
 use std::path::Path;
 
@@ -286,13 +284,13 @@ fn candidate_sidecar_paths(name: &str) -> Vec<PathBuf> {
         paths.push(directory.join(executable_name(&format!("quiver-{name}"))));
     }
     #[cfg(debug_assertions)]
-    if let Some(path) = workspace_binaries_sidecar_path(name) {
+    if let Some(path) = staged_sidecar_path(name) {
         paths.push(path);
     }
     paths
 }
 
-/// Locate a sidecar beside Quiver or in the development staging directory.
+/// Locate a sidecar beside Quiver or in Cargo's development staging directory.
 #[must_use]
 pub fn sidecar_path(name: &str) -> Option<PathBuf> {
     candidate_sidecar_paths(name)
@@ -393,42 +391,14 @@ fn macos_homebrew_tool(name: &'static str) -> Result<PathBuf, YtDlpError> {
 
 #[must_use]
 #[cfg(debug_assertions)]
-fn workspace_binaries_sidecar_path(name: &str) -> Option<PathBuf> {
-    let binaries_dir = workspace_root().join("src-tauri/binaries");
-    let legacy_name = match name {
-        "yt-dlp" => "quiver_yt-dlp",
-        "ytsubconverter" => "ytsubconverter",
-        other => other,
-    };
-    let prefix = format!("{legacy_name}-{}-", env::consts::ARCH);
-    let extension = if cfg!(windows) { ".exe" } else { "" };
-    let platform = if cfg!(windows) {
-        "windows"
-    } else if cfg!(target_os = "macos") {
-        "apple-darwin"
-    } else {
-        "linux"
-    };
-    fs::read_dir(binaries_dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.is_file()
-                && path
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .is_some_and(|file_name| {
-                        file_name.starts_with(&prefix)
-                            && file_name.contains(platform)
-                            && file_name.ends_with(extension)
-                    })
-        })
-}
-
-#[cfg(debug_assertions)]
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+fn staged_sidecar_path(name: &str) -> Option<PathBuf> {
+    let manifest = PathBuf::from(option_env!("QUIVER_SIDECAR_MANIFEST")?);
+    Some(
+        manifest
+            .parent()?
+            .join("sidecars")
+            .join(executable_name(&format!("quiver-{name}"))),
+    )
 }
 
 fn executable_name(name: &str) -> String {
@@ -441,7 +411,9 @@ fn executable_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{YtDlpError, YtDlpRunner, candidate_sidecar_paths, has_option, workspace_root};
+    use super::{
+        YtDlpError, YtDlpRunner, candidate_sidecar_paths, has_option, staged_sidecar_path,
+    };
     #[cfg(unix)]
     use std::{os::unix::fs::PermissionsExt, time::Duration};
     use std::{
@@ -452,8 +424,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     #[test]
-    fn workspace_root_points_at_project_root() {
-        assert!(workspace_root().ends_with("Quiver"));
+    fn build_stages_yt_dlp_in_out_dir() {
+        assert!(staged_sidecar_path("yt-dlp").is_some_and(|path| path.is_file()));
     }
 
     #[test]

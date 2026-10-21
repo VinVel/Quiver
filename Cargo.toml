@@ -6,7 +6,7 @@ authors = ["VinVel"]
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/VinVel/Quiver"
-build = "build.rs"
+build = "src/build.rs"
 
 [lints.clippy]
 all = "warn"
@@ -32,6 +32,14 @@ directories = "6"
 clap = { version = "4", features = ["derive"] }
 textwrap = "0.16"
 
+[build-dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+xz2 = "0.1"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
 
@@ -41,3 +49,27 @@ name = "quiver_lib"
 [[bin]]
 name = "quiver"
 path = "src/main.rs"
+
+[[bin]]
+name = "quiver-yt-dlp"
+path = "src/bin/quiver-yt-dlp.rs"
+
+[[bin]]
+name = "quiver-ytsubconverter"
+path = "src/bin/quiver-ytsubconverter.rs"
+
+[[bin]]
+name = "quiver-deno"
+path = "src/bin/quiver-deno.rs"
+
+[[bin]]
+name = "quiver-bgutil-pot"
+path = "src/bin/quiver-bgutil-pot.rs"
+
+[[bin]]
+name = "quiver-ffmpeg"
+path = "src/bin/quiver-ffmpeg.rs"
+
+[[bin]]
+name = "quiver-ffprobe"
+path = "src/bin/quiver-ffprobe.rs"

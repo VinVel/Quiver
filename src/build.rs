@@ -5,6 +5,7 @@ use std::{
     process::{Command, Output},
 };
 
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use tar::Archive;
 use xz2::read::XzDecoder;
@@ -12,127 +13,108 @@ use zip::ZipArchive;
 
 use utils::{
     build_target_triple, copy_directory, copy_file_if_exists, download, download_text,
-    executable_name, host_target_triple, mark_sidecar_executable, path_to_str,
-    sidecar_file_name_for_host, target_profile_dir, warn,
+    executable_name, host_target_triple, mark_sidecar_executable, out_dir, path_to_str,
+    sidecar_dir, sidecar_file_name_for_host, warn,
 };
 
-#[cfg(windows)]
-const STOP_COPIED_SIDECARS_POWERSHELL_SCRIPT: &str = r#"
-$paths = @($env:QUIVER_COPIED_SIDECARS -split '\|' | ForEach-Object {
-    [System.IO.Path]::GetFullPath($_).ToLowerInvariant()
-})
-Get-CimInstance Win32_Process |
-    Where-Object {
-        $_.ExecutablePath -and
-        $paths -contains ([System.IO.Path]::GetFullPath($_.ExecutablePath).ToLowerInvariant())
-    } |
-    ForEach-Object {
-        Write-Host "Stopping stale copied sidecar process $($_.ProcessId): $($_.ExecutablePath)"
-        Stop-Process -Id $_.ProcessId -Force
-    }
-"#;
+const SIDECARS: &[&str] = &[
+    "yt-dlp",
+    "ytsubconverter",
+    "deno",
+    "bgutil-pot",
+    "ffmpeg",
+    "ffprobe",
+];
 
 fn main() {
     configure_build_tracking();
+    fs::create_dir_all(sidecar_dir()).expect("failed to create OUT_DIR sidecar directory");
     yt_dlp::stage();
     yt_sub_converter::stage();
     deno::stage();
-    ffmpeg::stage();
     bgutil_pot_provider::stage();
-    ffmpeg::prepare_appimage_payload();
-    bgutil_pot_provider::prepare_plugin_resource();
-    stop_running_copied_sidecars();
-
-    #[allow(
-        unused_mut,
-        reason = "It needs to be mutable on windows, therefore it is now everywhere for consistency."
-    )]
-    let mut attributes = tauri_build::Attributes::new();
-    #[cfg(all(target_os = "windows", target_env = "msvc"))]
-    {
-        attributes = attributes
-            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
-        add_manifest();
-    }
-
-    tauri_build::try_build(attributes).expect("failed to build Tauri application metadata");
-}
-
-fn stop_running_copied_sidecars() {
-    #[cfg(windows)]
-    {
-        let Some(target_profile_dir) = target_profile_dir() else {
-            warn(
-                "Could not resolve Cargo target profile directory; skipping copied sidecar cleanup.",
-            );
-            return;
-        };
-
-        let sidecars = [
-            target_profile_dir.join(executable_name(bgutil_pot_provider::SIDECAR_NAME)),
-            target_profile_dir.join(executable_name(deno::SIDECAR_NAME)),
-            target_profile_dir.join(executable_name(ffmpeg::FFMPEG_SIDECAR_NAME)),
-            target_profile_dir.join(executable_name(ffmpeg::FFPROBE_SIDECAR_NAME)),
-            target_profile_dir.join(executable_name(yt_dlp::SIDECAR_NAME)),
-            target_profile_dir.join(executable_name(yt_sub_converter::SIDECAR_NAME)),
-        ];
-        let running_sidecars = sidecars
-            .iter()
-            .filter(|path| path.is_file())
-            .map(|path| path_to_str(path))
-            .collect::<Vec<_>>();
-
-        if running_sidecars.is_empty() {
-            return;
-        }
-
-        let sidecar_paths = running_sidecars.join("|");
-        let status = Command::new("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                STOP_COPIED_SIDECARS_POWERSHELL_SCRIPT,
-            ])
-            .env("QUIVER_COPIED_SIDECARS", sidecar_paths)
-            .status()
-            .expect("failed to start PowerShell while checking copied sidecar processes");
-
-        assert!(
-            status.success(),
-            "PowerShell failed while checking copied sidecar processes with status {status}"
-        );
-    }
+    ffmpeg::stage();
+    write_sidecar_manifest();
 }
 
 fn configure_build_tracking() {
     println!("cargo:rerun-if-env-changed=TARGET");
-    println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.Shared");
-    println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.UI.Linux");
-    println!("cargo:rerun-if-changed=../YTSubConverter/YTSubConverter.UI.Win");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/package.json");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/package-lock.json");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/server/src");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/plugin/pyproject.toml");
-    println!("cargo:rerun-if-changed=../bgutil-ytdlp-pot-provider/plugin/yt_dlp_plugins");
-    println!("cargo:rerun-if-changed=../yt-dlp/pyproject.toml");
-    println!("cargo:rerun-if-changed=../yt-dlp/THIRD_PARTY_LICENSES.txt");
-    println!("cargo:rerun-if-changed=../yt-dlp/bundle");
-    println!("cargo:rerun-if-changed=../yt-dlp/devscripts");
-    println!("cargo:rerun-if-changed=../yt-dlp/yt_dlp");
+    println!("cargo:rerun-if-changed=src/build.rs");
+    for source in [
+        "YTSubConverter/YTSubConverter.Shared",
+        "YTSubConverter/YTSubConverter.UI.Linux",
+        "YTSubConverter/YTSubConverter.UI.Win",
+        "bgutil-ytdlp-pot-provider/server/package.json",
+        "bgutil-ytdlp-pot-provider/server/package-lock.json",
+        "bgutil-ytdlp-pot-provider/server/src",
+        "bgutil-ytdlp-pot-provider/plugin/yt_dlp_plugins",
+        "yt-dlp/pyproject.toml",
+        "yt-dlp/THIRD_PARTY_LICENSES.txt",
+        "yt-dlp/bundle",
+        "yt-dlp/devscripts",
+        "yt-dlp/yt_dlp",
+    ] {
+        println!("cargo:rerun-if-changed={source}");
+    }
+}
+
+fn write_sidecar_manifest() {
+    let release = env::var("PROFILE").as_deref() != Ok("debug");
+    let mut entries = Vec::new();
+    for &name in SIDECARS {
+        if cfg!(target_os = "macos") && matches!(name, "ffmpeg" | "ffprobe") {
+            entries.push(json!({ "bin": format!("quiver-{name}"), "source": "cargo-bin" }));
+            continue;
+        }
+        let path = sidecar_dir().join(sidecar_file_name_for_host(name));
+        if !path.is_file() {
+            assert!(
+                !release,
+                "required release sidecar is missing: {}",
+                path.display()
+            );
+            warn(format!(
+                "sidecar unavailable in this development build: {}",
+                path.display()
+            ));
+            continue;
+        }
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(
+                fs::read(&path)
+                    .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+            )
+        );
+        entries.push(json!({
+            "bin": format!("quiver-{name}"),
+            "source": "staged",
+            "path": path,
+            "sha256": digest,
+        }));
+    }
+    let manifest = out_dir().join("sidecar-manifest.json");
+    let contents = json!({ "target": build_target_triple(), "sidecars": entries });
+    fs::write(
+        &manifest,
+        serde_json::to_vec_pretty(&contents).expect("serialize sidecar manifest"),
+    )
+    .expect("write sidecar manifest");
+    println!(
+        "cargo:rustc-env=QUIVER_SIDECAR_MANIFEST={}",
+        manifest.display()
+    );
 }
 
 mod utils {
     use super::{Path, PathBuf, env, fs};
 
-    pub fn target_profile_dir() -> Option<PathBuf> {
-        let out_dir = PathBuf::from(env::var_os("OUT_DIR")?);
-        out_dir
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
+    pub fn out_dir() -> PathBuf {
+        PathBuf::from(env::var_os("OUT_DIR").expect("Cargo must set OUT_DIR"))
+    }
+
+    pub fn sidecar_dir() -> PathBuf {
+        out_dir().join("sidecars")
     }
 
     pub fn path_to_str(path: &Path) -> &str {
@@ -227,17 +209,7 @@ mod utils {
     }
 
     pub fn sidecar_file_name_for_host(sidecar_name: &str) -> String {
-        let target = build_target_triple();
-
-        #[cfg(target_os = "windows")]
-        {
-            format!("{sidecar_name}-{target}.exe")
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            format!("{sidecar_name}-{target}")
-        }
+        executable_name(&format!("quiver-{sidecar_name}"))
     }
 
     pub fn build_target_triple() -> String {
@@ -311,11 +283,11 @@ mod utils {
 mod yt_dlp {
     use super::{
         Command, Digest, Output, Path, PathBuf, Sha256, build_target_triple, copy_directory,
-        copy_file_if_exists, env, fs, host_target_triple, mark_sidecar_executable,
-        sidecar_file_name_for_host,
+        copy_file_if_exists, env, fs, host_target_triple, mark_sidecar_executable, out_dir,
+        sidecar_dir, sidecar_file_name_for_host,
     };
 
-    pub const SIDECAR_NAME: &str = "quiver_yt-dlp";
+    pub const SIDECAR_NAME: &str = "yt-dlp";
     const BUILD_RECIPE: &str = "pyinstaller-default-curl-cffi-v2";
     const OPTIONAL_PYTHON_IMPORTS: &[&str] = &[
         "brotli",
@@ -342,9 +314,7 @@ mod yt_dlp {
 
     pub fn stage() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = manifest_dir
-            .parent()
-            .expect("src-tauri should be inside the workspace root");
+        let workspace_root = manifest_dir.as_path();
         let yt_dlp_source_dir = workspace_root.join("yt-dlp");
         assert!(
             yt_dlp_source_dir.join("pyproject.toml").is_file(),
@@ -359,12 +329,8 @@ mod yt_dlp {
             "yt-dlp must be built natively because PyInstaller freezes the host Python interpreter (host: {host}, target: {target})"
         );
 
-        let expected_sidecar = manifest_dir
-            .join("binaries")
-            .join(sidecar_file_name_for_host(SIDECAR_NAME));
-        let build_stamp_path = manifest_dir
-            .join("binaries")
-            .join(format!("{SIDECAR_NAME}-{target}.build-stamp"));
+        let expected_sidecar = sidecar_dir().join(sidecar_file_name_for_host(SIDECAR_NAME));
+        let build_stamp_path = sidecar_dir().join(format!("{SIDECAR_NAME}-{target}.build-stamp"));
         let source_fingerprint = yt_dlp_source_fingerprint(&yt_dlp_source_dir);
         let python_request = yt_dlp_python_request(&target);
         let expected_build_stamp =
@@ -502,6 +468,7 @@ mod yt_dlp {
     ) -> PathBuf {
         let virtual_environment = build_dir.join(".venv");
         let mut create_environment = Command::new("uv");
+        configure_uv(&mut create_environment);
         create_environment
             .args(["venv", "--managed-python", "--python", python_request])
             .arg(&virtual_environment)
@@ -527,6 +494,7 @@ mod yt_dlp {
         // SecretStorage is Linux-only, and Quiver supplies Deno as a separate sidecar.
         let feature_requirements = requirements_dir.join("curl-cffi.txt");
         let mut install_dependencies = Command::new("uv");
+        configure_uv(&mut install_dependencies);
         install_dependencies
             .args(["pip", "install", "--python"])
             .arg(&python)
@@ -542,6 +510,12 @@ mod yt_dlp {
 
         verify_yt_dlp_python_dependencies(build_dir, &python);
         python
+    }
+
+    fn configure_uv(command: &mut Command) {
+        command
+            .env("UV_CACHE_DIR", out_dir().join("uv-cache"))
+            .env("UV_PYTHON_INSTALL_DIR", out_dir().join("uv-python"));
     }
 
     fn yt_dlp_python_request(target: &str) -> &'static str {
@@ -710,27 +684,17 @@ mod yt_dlp {
 
 mod yt_sub_converter {
     use super::{
-        Command, Path, PathBuf, build_target_triple, env, executable_name, fs,
-        mark_sidecar_executable, path_to_str, sidecar_file_name_for_host, warn,
+        Command, Digest, Path, PathBuf, Sha256, build_target_triple, copy_directory, env,
+        executable_name, fs, mark_sidecar_executable, out_dir, path_to_str, sidecar_dir,
+        sidecar_file_name_for_host, warn,
     };
 
     pub const SIDECAR_NAME: &str = "ytsubconverter";
 
     pub fn stage() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let expected_sidecar = manifest_dir
-            .join("binaries")
-            .join(sidecar_file_name_for_host(SIDECAR_NAME));
-
-        if expected_sidecar.is_file() {
-            mark_sidecar_executable(&expected_sidecar);
-            return;
-        }
-
-        let Some(workspace_root) = manifest_dir.parent() else {
-            warn("Could not resolve workspace root; skipping YTSubConverter sidecar build.");
-            return;
-        };
+        let expected_sidecar = sidecar_dir().join(sidecar_file_name_for_host(SIDECAR_NAME));
+        let workspace_root = manifest_dir.as_path();
         let yt_sub_converter_dir = workspace_root.join("YTSubConverter");
 
         if !yt_sub_converter_dir.join("YTSubConverter.sln").is_file() {
@@ -741,17 +705,31 @@ mod yt_sub_converter {
             return;
         }
 
+        let stamp_path = sidecar_dir().join("ytsubconverter.build-stamp");
+        let expected_stamp = format!(
+            "{}:{}\n",
+            build_target_triple(),
+            source_fingerprint(&yt_sub_converter_dir)
+        );
+        if expected_sidecar.is_file()
+            && fs::read_to_string(&stamp_path).is_ok_and(|stamp| stamp == expected_stamp)
+        {
+            mark_sidecar_executable(&expected_sidecar);
+            return;
+        }
+
+        let build_source_dir = prepare_build_sources(&yt_sub_converter_dir);
+
         #[cfg(target_os = "windows")]
         let built_binary = {
-            let Some(built_binary) = build_yt_sub_converter_windows(&yt_sub_converter_dir) else {
+            let Some(built_binary) = build_yt_sub_converter_windows(&build_source_dir) else {
                 return;
             };
             built_binary
         };
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let built_binary =
-            build_yt_sub_converter_self_contained(&yt_sub_converter_dir, &manifest_dir);
+        let built_binary = build_yt_sub_converter_self_contained(&build_source_dir);
 
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         let built_binary = {
@@ -776,6 +754,68 @@ mod yt_sub_converter {
         });
 
         mark_sidecar_executable(&expected_sidecar);
+        fs::write(stamp_path, expected_stamp).expect("failed to write YTSubConverter build stamp");
+    }
+
+    fn source_fingerprint(root: &Path) -> String {
+        fn hash_path(root: &Path, path: &Path, hasher: &mut Sha256) {
+            if path.is_dir() {
+                let mut entries = fs::read_dir(path)
+                    .expect("failed to read YTSubConverter source")
+                    .map(|entry| entry.expect("failed to read YTSubConverter entry").path())
+                    .filter(|entry| {
+                        !matches!(
+                            entry.file_name().and_then(|name| name.to_str()),
+                            Some("bin" | "obj")
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                entries.sort();
+                for entry in entries {
+                    hash_path(root, &entry, hasher);
+                }
+            } else {
+                hasher.update(
+                    path.strip_prefix(root)
+                        .expect("source path within project")
+                        .to_string_lossy()
+                        .as_bytes(),
+                );
+                hasher.update([0]);
+                hasher.update(fs::read(path).expect("failed to read YTSubConverter source"));
+                hasher.update([0]);
+            }
+        }
+        let mut hasher = Sha256::new();
+        for project in [
+            "YTSubConverter.Shared",
+            "YTSubConverter.UI.Linux",
+            "YTSubConverter.UI.Win",
+        ] {
+            hash_path(root, &root.join(project), &mut hasher);
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn prepare_build_sources(source: &Path) -> PathBuf {
+        let destination = out_dir().join("ytsubconverter-source");
+        if destination.exists() {
+            fs::remove_dir_all(&destination).expect("failed to clear YTSubConverter build sources");
+        }
+        for project in [
+            "YTSubConverter.Shared",
+            "YTSubConverter.UI.Linux",
+            "YTSubConverter.UI.Win",
+        ] {
+            copy_directory(&source.join(project), &destination.join(project));
+            for generated in ["bin", "obj"] {
+                let path = destination.join(project).join(generated);
+                if path.exists() {
+                    fs::remove_dir_all(path).expect("failed to clear copied YTSubConverter output");
+                }
+            }
+        }
+        destination
     }
 
     #[cfg(target_os = "windows")]
@@ -783,6 +823,8 @@ mod yt_sub_converter {
         let project = yt_sub_converter_dir
             .join("YTSubConverter.UI.Win")
             .join("YTSubConverter.UI.Win.csproj");
+        let publish_dir = out_dir().join("ytsubconverter-publish");
+        fs::create_dir_all(&publish_dir).expect("failed to create YTSubConverter output directory");
         let Some(msbuild) = find_msbuild() else {
             warn(
                 "Visual Studio MSBuild was not found; skipping YTSubConverter Windows sidecar build. \
@@ -793,12 +835,14 @@ mod yt_sub_converter {
 
         let status = Command::new(&msbuild)
             .arg(&project)
+            .env("NUGET_PACKAGES", out_dir().join("nuget-packages"))
             .args([
                 "/restore",
                 "/m",
                 "/p:Configuration=Release",
                 "/p:Platform=AnyCPU",
             ])
+            .arg(format!("/p:OutDir={}\\", publish_dir.display()))
             .current_dir(yt_sub_converter_dir)
             .status()
             .unwrap_or_else(|error| {
@@ -813,11 +857,7 @@ mod yt_sub_converter {
             "MSBuild failed while building YTSubConverter sidecar with status {status}"
         );
 
-        let built_binary = yt_sub_converter_dir
-            .join("YTSubConverter.UI.Win")
-            .join("bin")
-            .join("Release")
-            .join("YTSubConverter.exe");
+        let built_binary = publish_dir.join("YTSubConverter.exe");
 
         assert!(
             built_binary.is_file(),
@@ -895,19 +935,13 @@ mod yt_sub_converter {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn build_yt_sub_converter_self_contained(
-        yt_sub_converter_dir: &Path,
-        manifest_dir: &Path,
-    ) -> PathBuf {
+    fn build_yt_sub_converter_self_contained(yt_sub_converter_dir: &Path) -> PathBuf {
         let project = yt_sub_converter_dir
             .join("YTSubConverter.UI.Linux")
             .join("YTSubConverter.UI.Linux.csproj");
         let target = build_target_triple();
         let runtime_identifier = yt_sub_converter_runtime_identifier(&target);
-        let publish_dir = manifest_dir
-            .join("target")
-            .join("ytsubconverter")
-            .join(&target);
+        let publish_dir = out_dir().join("ytsubconverter-publish").join(&target);
 
         run_dotnet(
             yt_sub_converter_dir,
@@ -956,6 +990,8 @@ mod yt_sub_converter {
     fn run_dotnet<const N: usize>(working_directory: &Path, args: [&str; N]) {
         let status = Command::new("dotnet")
             .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+            .env("DOTNET_CLI_HOME", out_dir().join("dotnet-home"))
+            .env("NUGET_PACKAGES", out_dir().join("nuget-packages"))
             .args(args)
             .current_dir(working_directory)
             .status()
@@ -971,18 +1007,15 @@ mod yt_sub_converter {
 mod bgutil_pot_provider {
     use super::{
         Command, Path, PathBuf, build_target_triple, copy_directory, copy_file_if_exists, deno,
-        env, executable_name, fs, host_target_triple, sidecar_file_name_for_host,
-        target_profile_dir, warn,
+        env, executable_name, fs, host_target_triple, sidecar_dir, sidecar_file_name_for_host,
+        warn,
     };
 
     pub const SIDECAR_NAME: &str = "bgutil-pot";
 
     pub fn stage() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let Some(workspace_root) = manifest_dir.parent() else {
-            warn("Could not resolve workspace root; skipping bgutil POT provider sidecar build.");
-            return;
-        };
+        let workspace_root = manifest_dir.as_path();
         let provider_dir = workspace_root.join("bgutil-ytdlp-pot-provider");
         let server_dir = provider_dir.join("server");
 
@@ -1004,12 +1037,8 @@ mod bgutil_pot_provider {
             "bgutil POT provider sidecar must be built natively because the build executes the target-specific Deno runtime (host: {host}, target: {target})"
         );
 
-        let expected_sidecar = manifest_dir
-            .join("binaries")
-            .join(sidecar_file_name_for_host(SIDECAR_NAME));
-        let build_stamp_path = manifest_dir
-            .join("binaries")
-            .join(format!("{SIDECAR_NAME}-{target}.build-stamp"));
+        let expected_sidecar = sidecar_dir().join(sidecar_file_name_for_host(SIDECAR_NAME));
+        let build_stamp_path = sidecar_dir().join(format!("{SIDECAR_NAME}-{target}.build-stamp"));
         let expected_build_stamp = format!("{}:{target}\n", deno::VERSION);
         let sidecar_is_current = expected_sidecar.is_file()
             && fs::read_to_string(&build_stamp_path)
@@ -1026,7 +1055,7 @@ mod bgutil_pot_provider {
             PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
         let build_dir = prepare_bgutil_build_directory(&server_dir, &out_dir);
         install_bgutil_dependencies(&build_dir, &out_dir);
-        let built_binary = compile_bgutil_sidecar(&manifest_dir, &build_dir, &target);
+        let built_binary = compile_bgutil_sidecar(&build_dir, &target);
 
         fs::create_dir_all(
             expected_sidecar
@@ -1109,10 +1138,8 @@ mod bgutil_pot_provider {
         );
     }
 
-    fn compile_bgutil_sidecar(manifest_dir: &Path, build_dir: &Path, target: &str) -> PathBuf {
-        let deno_sidecar = manifest_dir
-            .join("binaries")
-            .join(sidecar_file_name_for_host(deno::SIDECAR_NAME));
+    fn compile_bgutil_sidecar(build_dir: &Path, target: &str) -> PathBuf {
+        let deno_sidecar = sidecar_dir().join(sidecar_file_name_for_host(deno::SIDECAR_NAME));
         assert!(
             deno_sidecar.is_file(),
             "Deno sidecar is missing at {}; it must be staged before building the bgutil POT provider",
@@ -1121,6 +1148,7 @@ mod bgutil_pot_provider {
 
         let built_binary = build_dir.join(executable_name(SIDECAR_NAME));
         let deno_status = Command::new(&deno_sidecar)
+            .env("DENO_DIR", build_dir.join("deno-cache"))
             .args([
                 "compile",
                 "--no-check",
@@ -1152,78 +1180,6 @@ mod bgutil_pot_provider {
         );
 
         built_binary
-    }
-
-    pub fn prepare_plugin_resource() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let Some(workspace_root) = manifest_dir.parent() else {
-            warn("Could not resolve workspace root; skipping POT provider plugin preparation.");
-            return;
-        };
-        let source_plugin = workspace_root
-            .join("bgutil-ytdlp-pot-provider")
-            .join("plugin");
-
-        if !source_plugin.join("yt_dlp_plugins").is_dir() {
-            warn(format!(
-                "bgutil-ytdlp-pot-provider plugin is missing at {}; skipping yt-dlp plugin resource preparation.",
-                source_plugin.display()
-            ));
-            return;
-        }
-
-        let plugin_resource = manifest_dir
-            .join("resources")
-            .join("yt-dlp-plugins")
-            .join("bgutil");
-
-        remove_generated_resource_directory(&manifest_dir.join("resources"), &plugin_resource);
-        if let Some(target_profile_dir) = target_profile_dir() {
-            let copied_plugin_resource = target_profile_dir
-                .join("resources")
-                .join("yt-dlp-plugins")
-                .join("bgutil");
-            remove_generated_resource_directory(
-                &target_profile_dir.join("resources"),
-                &copied_plugin_resource,
-            );
-        }
-
-        copy_file_if_exists(
-            &source_plugin.join("pyproject.toml"),
-            &plugin_resource.join("pyproject.toml"),
-        );
-        copy_directory(
-            &source_plugin.join("yt_dlp_plugins"),
-            &plugin_resource.join("yt_dlp_plugins"),
-        );
-
-        let extractor_resource = plugin_resource.join("yt_dlp_plugins").join("extractor");
-        assert!(
-            extractor_resource.join("getpot_bgutil_http.py").is_file(),
-            "bgutil POT provider plugin is missing its HTTP provider at {}",
-            extractor_resource.display()
-        );
-        assert!(
-            !extractor_resource.join("getpot_bgutil_cli.py").exists(),
-            "stale CLI-based bgutil POT provider plugin found at {}; clean the generated resource before bundling",
-            extractor_resource.join("getpot_bgutil_cli.py").display()
-        );
-    }
-
-    fn remove_generated_resource_directory(resources_dir: &Path, path: &Path) {
-        if !path.exists() {
-            return;
-        }
-
-        assert!(
-            path.starts_with(resources_dir),
-            "refusing to remove generated directory outside resources: {}",
-            path.display()
-        );
-
-        fs::remove_dir_all(path)
-            .unwrap_or_else(|error| panic!("failed to remove {}: {error}", path.display()));
     }
 
     fn is_source_newer_than(source: &Path, destination: &Path) -> bool {
@@ -1267,34 +1223,31 @@ mod bgutil_pot_provider {
 
 mod deno {
     use super::{
-        Cursor, Digest, Path, PathBuf, Sha256, ZipArchive, build_target_triple, download,
-        download_text, env, executable_name, fs, sidecar_file_name_for_host,
+        Cursor, Digest, Path, Sha256, ZipArchive, build_target_triple, download, executable_name,
+        fs, sidecar_dir, sidecar_file_name_for_host,
     };
 
     pub const VERSION: &str = "2.9.4";
     pub const SIDECAR_NAME: &str = "deno";
     const RELEASE_BASE_URL: &str = "https://github.com/denoland/deno/releases/download";
-    const CHECKSUM_FILE_SUFFIX: &str = ".sha256sum";
 
     pub fn stage() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let expected_sidecar = manifest_dir
-            .join("binaries")
-            .join(sidecar_file_name_for_host(SIDECAR_NAME));
-
-        if expected_sidecar.is_file() {
+        let expected_sidecar = sidecar_dir().join(sidecar_file_name_for_host(SIDECAR_NAME));
+        let target = build_target_triple();
+        let expected_stamp = format!("{VERSION}:{target}:{}\n", deno_checksum(&target));
+        let stamp_path = sidecar_dir().join("deno.build-stamp");
+        if expected_sidecar.is_file()
+            && fs::read_to_string(&stamp_path).is_ok_and(|stamp| stamp == expected_stamp)
+        {
             return;
         }
 
-        let target = build_target_triple();
         let archive_name = deno_archive_name(&target);
         let archive_url = format!("{RELEASE_BASE_URL}/v{VERSION}/{archive_name}");
-        let checksum_url = format!("{archive_url}{CHECKSUM_FILE_SUFFIX}");
         let archive = download(&archive_url);
-        let checksum = download_text(&checksum_url);
-
-        verify_sha256(&archive, &checksum, &archive_name);
+        verify_sha256(&archive, deno_checksum(&target), &archive_name);
         extract_deno_binary(&archive, &expected_sidecar);
+        fs::write(stamp_path, expected_stamp).expect("failed to write Deno build stamp");
     }
 
     fn deno_archive_name(target: &str) -> String {
@@ -1309,16 +1262,31 @@ mod deno {
         }
     }
 
-    fn verify_sha256(bytes: &[u8], checksum: &str, archive_name: &str) {
-        let expected = checksum
-            .split_whitespace()
-            .find(|part| {
-                part.len() == 64 && part.chars().all(|character| character.is_ascii_hexdigit())
-            })
-            .unwrap_or_else(|| {
-                panic!("checksum for {archive_name} did not contain a SHA-256 digest")
-            })
-            .to_ascii_lowercase();
+    fn deno_checksum(target: &str) -> &'static str {
+        match target {
+            "aarch64-apple-darwin" => {
+                "6d17647fdbf9c587a581dba205054c4ccf732dae0a196cc1e9b44c07589db412"
+            }
+            "aarch64-unknown-linux-gnu" => {
+                "111da5c05c240cfdc4340f234a0e3539d39dbcb6755221f19dcd60bacc8be5aa"
+            }
+            "aarch64-pc-windows-msvc" => {
+                "7c8c94a603c7de90a4c41fa9b87d31bc9d3c91fb84af65dadacc8cdd97d365d4"
+            }
+            "x86_64-apple-darwin" => {
+                "f757df6d3991e37601c69fad56c22b37c4ea77b5dcfad3636a642c2ba4c9b19f"
+            }
+            "x86_64-pc-windows-msvc" => {
+                "68ed08b05c56cf887e9aa509947dc3f468f7e12f47a13e5c1abd51d46d1453ef"
+            }
+            "x86_64-unknown-linux-gnu" => {
+                "c24f955d9fbfe0ea5ae2b501c8e71ae76e31e4c9782390a54a284b3364fda725"
+            }
+            unsupported => panic!("Deno checksum is not configured for target {unsupported}"),
+        }
+    }
+
+    fn verify_sha256(bytes: &[u8], expected: &str, archive_name: &str) {
         let actual = format!("{:x}", Sha256::digest(bytes));
 
         assert_eq!(
@@ -1367,8 +1335,8 @@ mod deno {
 
 mod ffmpeg {
     use super::{
-        Archive, Cursor, Digest, Path, PathBuf, Sha256, XzDecoder, ZipArchive, build_target_triple,
-        download, download_text, env, executable_name, fs, mark_sidecar_executable,
+        Archive, Cursor, Digest, Path, Sha256, XzDecoder, ZipArchive, build_target_triple,
+        download, download_text, executable_name, fs, mark_sidecar_executable, sidecar_dir,
         sidecar_file_name_for_host,
     };
 
@@ -1381,13 +1349,10 @@ mod ffmpeg {
     pub fn stage() {
         #[cfg(not(target_os = "macos"))]
         {
-            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let expected_ffmpeg = manifest_dir
-                .join("binaries")
-                .join(sidecar_file_name_for_host(FFMPEG_SIDECAR_NAME));
-            let expected_ffprobe = manifest_dir
-                .join("binaries")
-                .join(sidecar_file_name_for_host(FFPROBE_SIDECAR_NAME));
+            let expected_ffmpeg =
+                sidecar_dir().join(sidecar_file_name_for_host(FFMPEG_SIDECAR_NAME));
+            let expected_ffprobe =
+                sidecar_dir().join(sidecar_file_name_for_host(FFPROBE_SIDECAR_NAME));
 
             if expected_ffmpeg.is_file() && expected_ffprobe.is_file() {
                 mark_sidecar_executable(&expected_ffmpeg);
@@ -1396,43 +1361,6 @@ mod ffmpeg {
             }
 
             stage_yt_dlp_ffmpeg_builds_sidecars(&expected_ffmpeg, &expected_ffprobe);
-        }
-    }
-
-    pub fn prepare_appimage_payload() {
-        #[cfg(target_os = "linux")]
-        {
-            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let source_dir = manifest_dir.join("binaries");
-            let appimage_dir = source_dir.join("appimage");
-
-            fs::create_dir_all(&appimage_dir).unwrap_or_else(|error| {
-                panic!(
-                    "failed to create AppImage binary payload directory at {}: {error}",
-                    appimage_dir.display()
-                )
-            });
-
-            for binary_name in [FFMPEG_SIDECAR_NAME, FFPROBE_SIDECAR_NAME] {
-                let source = source_dir.join(sidecar_file_name_for_host(binary_name));
-                let destination = appimage_dir.join(executable_name(binary_name));
-
-                assert!(
-                    source.is_file(),
-                    "AppImage payload binary {} was not staged at {}",
-                    binary_name,
-                    source.display()
-                );
-
-                fs::copy(&source, &destination).unwrap_or_else(|error| {
-                    panic!(
-                        "failed to copy AppImage payload binary from {} to {}: {error}",
-                        source.display(),
-                        destination.display()
-                    )
-                });
-                mark_sidecar_executable(&destination);
-            }
         }
     }
 
@@ -1601,23 +1529,4 @@ mod ffmpeg {
                 .unwrap_or_else(|error| panic!("failed to mark {name} binary executable: {error}"));
         }
     }
-}
-
-#[cfg(all(target_os = "windows", target_env = "msvc"))]
-fn add_manifest() {
-    static WINDOWS_MANIFEST_FILE: &str = "windows-app-manifest.xml";
-
-    let manifest = env::current_dir()
-        .expect("failed to resolve current directory")
-        .join(WINDOWS_MANIFEST_FILE);
-
-    println!("cargo:rerun-if-changed={}", manifest.display());
-    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
-    println!(
-        "cargo:rustc-link-arg=/MANIFESTINPUT:{}",
-        manifest
-            .to_str()
-            .expect("manifest path should be valid Unicode")
-    );
-    println!("cargo:rustc-link-arg=/WX");
 }

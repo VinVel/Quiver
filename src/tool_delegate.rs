@@ -1,14 +1,14 @@
-//! Source-build delegates for the `FFmpeg` pair. Release archives replace these
-//! targets with the packaged native tools on Windows and Linux.
+//! Source-build delegates for native sidecars staged by the build script.
+//! Release archives replace these targets with the packaged native tools.
 
 use std::{env, path::PathBuf, process::Command};
 
-/// Forward to a Homebrew tool on macOS or the development-staged tool elsewhere.
+/// Forward to a Homebrew `FFmpeg` tool on macOS or a staged native sidecar.
 #[must_use]
 pub fn run(tool: &str) -> i32 {
     let Some(binary) = tool_path(tool) else {
         eprintln!(
-            "{tool} is unavailable; install FFmpeg with Homebrew on macOS or build the native sidecar for this platform"
+            "{tool} is unavailable; build Quiver's native sidecars or install FFmpeg with Homebrew on macOS"
         );
         return 127;
     };
@@ -21,33 +21,21 @@ pub fn run(tool: &str) -> i32 {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn tool_path(tool: &str) -> Option<PathBuf> {
-    ["/opt/homebrew/bin", "/usr/local/bin"]
-        .into_iter()
-        .map(|directory| PathBuf::from(directory).join(tool))
-        .find(|path| path.is_file())
-}
+    #[cfg(target_os = "macos")]
+    if matches!(tool, "ffmpeg" | "ffprobe") {
+        return ["/opt/homebrew/bin", "/usr/local/bin"]
+            .into_iter()
+            .map(|directory| PathBuf::from(directory).join(tool))
+            .find(|path| path.is_file());
+    }
 
-#[cfg(not(target_os = "macos"))]
-fn tool_path(tool: &str) -> Option<PathBuf> {
-    let staged = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src-tauri/binaries");
-    let prefix = format!("{tool}-{}-", env::consts::ARCH);
-    let extension = if cfg!(windows) { ".exe" } else { "" };
-    let platform = if cfg!(windows) { "windows" } else { "linux" };
-    std::fs::read_dir(staged)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.is_file()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        name.starts_with(&prefix)
-                            && name.contains(platform)
-                            && name.ends_with(extension)
-                    })
-        })
+    let manifest = PathBuf::from(option_env!("QUIVER_SIDECAR_MANIFEST")?);
+    let filename = if cfg!(windows) {
+        format!("quiver-{tool}.exe")
+    } else {
+        format!("quiver-{tool}")
+    };
+    let path = manifest.parent()?.join("sidecars").join(filename);
+    path.is_file().then_some(path)
 }
