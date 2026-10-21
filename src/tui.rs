@@ -16,7 +16,6 @@ use quiver_lib::{
     download::{DownloadEvent, DownloadRequest, DownloadService},
     presets::{self, DownloadPreset, DownloadPresetInput, PresetCommandPreview},
     settings::{DownloadInputSettings, SettingsStore, ThemePreferences},
-    yt_dlp,
 };
 use ratatui_kit::{
     components::tui_widget_list::{ListBuilder, ListState, ListView},
@@ -186,7 +185,6 @@ impl App {
             link: self.url.value().to_owned(),
             args: preview.args.clone(),
             advanced_subtitle_pipeline: self.advanced,
-            plugin_dirs: yt_dlp::candidate_plugin_dirs(None),
         };
         let (sender, receiver) = mpsc::unbounded_channel();
         let service = Arc::clone(&self.service);

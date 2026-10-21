@@ -1,11 +1,4 @@
-use std::{
-    env,
-    ffi::OsStr,
-    fs,
-    path::{Path, PathBuf},
-    process::Stdio,
-    sync::Arc,
-};
+use std::{env, ffi::OsStr, path::PathBuf, process::Stdio, sync::Arc};
 
 use serde::Serialize;
 use thiserror::Error;
@@ -15,8 +8,13 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[cfg(debug_assertions)]
+use std::fs;
+#[cfg(target_os = "macos")]
+use std::path::Path;
+
 const YT_DLP_BINARY_ENV: &str = "QUIVER_YT_DLP_BINARY";
-const YT_DLP_BINARY_NAME: &str = "quiver_yt-dlp";
+const YT_DLP_BINARY_NAME: &str = "yt-dlp";
 
 #[derive(Debug, Serialize)]
 pub struct YtDlpCommandOutput {
@@ -30,6 +28,11 @@ pub struct YtDlpCommandOutput {
 pub enum YtDlpError {
     #[error("yt-dlp binary not found; searched {0:?}")]
     MissingBinary(Vec<PathBuf>),
+    #[error("required {name} sidecar is missing; searched {paths:?}")]
+    MissingSidecar {
+        name: &'static str,
+        paths: Vec<PathBuf>,
+    },
     #[error("failed to run yt-dlp: {0}")]
     SpawnFailed(String),
     #[error("download cancelled")]
@@ -127,7 +130,7 @@ impl YtDlpRunner {
         }
         let mut command = Command::new(&self.binary_path);
         command
-            .args(self.command_args(args))
+            .args(self.command_args(args)?)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -182,7 +185,7 @@ impl YtDlpRunner {
         })
     }
 
-    fn command_args<I, S>(&self, args: I) -> Vec<String>
+    fn command_args<I, S>(&self, args: I) -> Result<Vec<String>, YtDlpError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
@@ -192,17 +195,15 @@ impl YtDlpRunner {
             .map(|arg| arg.as_ref().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         let mut command_args = Vec::new();
-        if !has_option(&args, "--js-runtimes")
-            && let Some(path) = sidecar_path("deno")
-        {
+        if self.uses_bundled_yt_dlp && !has_option(&args, "--js-runtimes") {
+            let path = required_sidecar_path("deno")?;
             command_args.extend([
                 "--js-runtimes".to_string(),
                 format!("deno:{}", path.display()),
             ]);
         }
-        if !has_option(&args, "--ffmpeg-location")
-            && let Some(location) = bundled_ffmpeg_location()
-        {
+        if self.uses_bundled_yt_dlp && !has_option(&args, "--ffmpeg-location") {
+            let location = bundled_ffmpeg_location()?;
             command_args.extend([
                 "--ffmpeg-location".to_string(),
                 location.display().to_string(),
@@ -215,7 +216,7 @@ impl YtDlpRunner {
             ]);
         }
         command_args.extend(args);
-        command_args
+        Ok(command_args)
     }
 }
 
@@ -282,7 +283,7 @@ fn candidate_sidecar_paths(name: &str) -> Vec<PathBuf> {
     if let Ok(exe) = env::current_exe()
         && let Some(directory) = exe.parent()
     {
-        paths.push(directory.join(executable_name(name)));
+        paths.push(directory.join(executable_name(&format!("quiver-{name}"))));
     }
     #[cfg(debug_assertions)]
     if let Some(path) = workspace_binaries_sidecar_path(name) {
@@ -299,56 +300,115 @@ pub fn sidecar_path(name: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn bundled_ffmpeg_location() -> Option<PathBuf> {
+fn required_sidecar_path(name: &'static str) -> Result<PathBuf, YtDlpError> {
+    let candidates = candidate_sidecar_paths(name);
+    candidates
+        .iter()
+        .find(|path| path.is_file())
+        .cloned()
+        .ok_or(YtDlpError::MissingSidecar {
+            name,
+            paths: candidates,
+        })
+}
+
+fn bundled_ffmpeg_location() -> Result<PathBuf, YtDlpError> {
     #[cfg(target_os = "macos")]
     {
-        None
+        let (ffmpeg, ffprobe) = if let (Some(ffmpeg), Some(ffprobe)) =
+            (sidecar_path("ffmpeg"), sidecar_path("ffprobe"))
+        {
+            (ffmpeg, ffprobe)
+        } else {
+            (
+                macos_homebrew_tool("ffmpeg")?,
+                macos_homebrew_tool("ffprobe")?,
+            )
+        };
+        if ffmpeg.parent() == ffprobe.parent() {
+            Ok(ffmpeg)
+        } else {
+            Err(YtDlpError::SpawnFailed(
+                "Homebrew ffmpeg and ffprobe must share a directory".into(),
+            ))
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let ffmpeg = sidecar_path("ffmpeg")?;
-        let ffprobe = ffmpeg.parent()?.join(executable_name("ffprobe"));
-        ffprobe.is_file().then_some(ffmpeg.parent()?.to_path_buf())
+        let ffmpeg = required_sidecar_path("ffmpeg")?;
+        let ffprobe = required_sidecar_path("ffprobe")?;
+        if ffmpeg.parent() == ffprobe.parent() {
+            Ok(ffmpeg)
+        } else {
+            Err(YtDlpError::SpawnFailed(
+                "ffmpeg and ffprobe sidecars must share a directory".into(),
+            ))
+        }
     }
 }
 
 #[must_use]
 pub fn ffmpeg_path() -> PathBuf {
-    sidecar_path("ffmpeg").unwrap_or_else(|| "ffmpeg".into())
+    #[cfg(target_os = "macos")]
+    return sidecar_path("ffmpeg")
+        .unwrap_or_else(|| macos_homebrew_tool("ffmpeg").unwrap_or_else(|_| "ffmpeg".into()));
+    #[cfg(not(target_os = "macos"))]
+    return sidecar_path("ffmpeg").unwrap_or_else(|| {
+        candidate_sidecar_paths("ffmpeg")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "quiver-ffmpeg".into())
+    });
 }
 
 #[must_use]
 pub fn ffprobe_path() -> PathBuf {
-    sidecar_path("ffprobe").unwrap_or_else(|| "ffprobe".into())
+    #[cfg(target_os = "macos")]
+    return sidecar_path("ffprobe")
+        .unwrap_or_else(|| macos_homebrew_tool("ffprobe").unwrap_or_else(|_| "ffprobe".into()));
+    #[cfg(not(target_os = "macos"))]
+    return sidecar_path("ffprobe").unwrap_or_else(|| {
+        candidate_sidecar_paths("ffprobe")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "quiver-ffprobe".into())
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn macos_homebrew_tool(name: &'static str) -> Result<PathBuf, YtDlpError> {
+    let candidates = ["/opt/homebrew/bin", "/usr/local/bin"]
+        .into_iter()
+        .map(|directory| Path::new(directory).join(name))
+        .collect::<Vec<_>>();
+    candidates
+        .iter()
+        .find(|path| path.is_file())
+        .cloned()
+        .ok_or(YtDlpError::MissingSidecar {
+            name,
+            paths: candidates,
+        })
 }
 
 #[must_use]
-pub fn candidate_plugin_dirs(resource_dir: Option<&Path>) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    #[cfg(debug_assertions)]
-    paths.push(workspace_root().join("src-tauri/resources/yt-dlp-plugins"));
-    if let Some(resource_dir) = resource_dir {
-        paths.push(resource_dir.join("yt-dlp-plugins"));
-        paths.push(resource_dir.join("resources/yt-dlp-plugins"));
-    }
-    paths
-        .into_iter()
-        .filter(|path| is_supported_plugin_dir(path))
-        .collect()
-}
-
-fn is_supported_plugin_dir(path: &Path) -> bool {
-    let root = path.join("bgutil/yt_dlp_plugins");
-    root.is_dir()
-        && root.join("extractor/getpot_bgutil_http.py").is_file()
-        && !root.join("extractor/getpot_bgutil_cli.py").exists()
-}
-
 #[cfg(debug_assertions)]
 fn workspace_binaries_sidecar_path(name: &str) -> Option<PathBuf> {
     let binaries_dir = workspace_root().join("src-tauri/binaries");
-    let prefix = format!("{name}-");
+    let legacy_name = match name {
+        "yt-dlp" => "quiver_yt-dlp",
+        "ytsubconverter" => "ytsubconverter",
+        other => other,
+    };
+    let prefix = format!("{legacy_name}-{}-", env::consts::ARCH);
     let extension = if cfg!(windows) { ".exe" } else { "" };
+    let platform = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "apple-darwin"
+    } else {
+        "linux"
+    };
     fs::read_dir(binaries_dir)
         .ok()?
         .filter_map(Result::ok)
@@ -359,11 +419,14 @@ fn workspace_binaries_sidecar_path(name: &str) -> Option<PathBuf> {
                     .file_name()
                     .and_then(OsStr::to_str)
                     .is_some_and(|file_name| {
-                        file_name.starts_with(&prefix) && file_name.ends_with(extension)
+                        file_name.starts_with(&prefix)
+                            && file_name.contains(platform)
+                            && file_name.ends_with(extension)
                     })
         })
 }
 
+#[cfg(debug_assertions)]
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -378,7 +441,7 @@ fn executable_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{YtDlpError, YtDlpRunner, has_option, is_supported_plugin_dir, workspace_root};
+    use super::{YtDlpError, YtDlpRunner, candidate_sidecar_paths, has_option, workspace_root};
     #[cfg(unix)]
     use std::{os::unix::fs::PermissionsExt, time::Duration};
     use std::{
@@ -394,31 +457,44 @@ mod tests {
     }
 
     #[test]
+    fn installed_sidecars_are_searched_beside_quiver_first() {
+        let executable = std::env::current_exe().expect("current executable");
+        assert_eq!(
+            candidate_sidecar_paths("yt-dlp").first(),
+            Some(&executable.parent().unwrap().join(if cfg!(windows) {
+                "quiver-yt-dlp.exe"
+            } else {
+                "quiver-yt-dlp"
+            }))
+        );
+    }
+
+    #[test]
     fn override_ignores_plugin_dirs() {
         let args = YtDlpRunner::from_binary(PathBuf::from("yt-dlp"), false)
             .with_plugin_dirs(vec![PathBuf::from("/tmp/yt-dlp-plugins")])
-            .command_args(["--version"]);
+            .command_args(["--version"])
+            .expect("command args");
         assert!(!has_option(&args, "--plugin-dirs"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn bundled_runner_uses_plugin_dirs() {
-        let args = YtDlpRunner::from_binary(PathBuf::from("quiver_yt-dlp"), true)
+        let args = YtDlpRunner::from_binary(PathBuf::from("quiver-yt-dlp"), true)
             .with_plugin_dirs(vec![PathBuf::from("/tmp/yt-dlp-plugins")])
-            .command_args(["--version"]);
+            .command_args(["--version"])
+            .expect("command args");
         assert!(has_option(&args, "--plugin-dirs"));
-    }
-
-    #[test]
-    fn stale_cli_plugin_is_rejected() {
-        let root =
-            std::env::temp_dir().join(format!("quiver-stale-plugin-test-{}", std::process::id()));
-        let extractor = root.join("bgutil/yt_dlp_plugins/extractor");
-        std::fs::create_dir_all(&extractor).expect("create plugin directory");
-        std::fs::write(extractor.join("getpot_bgutil_cli.py"), "# stale").expect("write plugin");
-        std::fs::write(extractor.join("getpot_bgutil_http.py"), "# http").expect("write plugin");
-        assert!(!is_supported_plugin_dir(&root));
-        std::fs::remove_dir_all(root).expect("remove plugin directory");
+        assert!(has_option(&args, "--js-runtimes"));
+        assert!(has_option(&args, "--ffmpeg-location"));
+        let ffmpeg_location = args
+            .iter()
+            .position(|arg| arg == "--ffmpeg-location")
+            .and_then(|index| args.get(index + 1))
+            .expect("explicit FFmpeg executable");
+        assert!(ffmpeg_location.contains("ffmpeg"));
+        assert!(!ffmpeg_location.ends_with("binaries"));
     }
 
     #[cfg(unix)]

@@ -1,10 +1,11 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::sync::Mutex;
 
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    pot_plugin::{self, PotPluginError},
     pot_server::{PotServer, PotServerError},
     presets::{self, PresetId},
     subtitle_pipeline,
@@ -16,7 +17,6 @@ pub struct DownloadRequest {
     pub link: String,
     pub args: Vec<String>,
     pub advanced_subtitle_pipeline: bool,
-    pub plugin_dirs: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -40,6 +40,8 @@ pub enum DownloadError {
     YtDlp(#[from] YtDlpError),
     #[error(transparent)]
     PotServer(#[from] PotServerError),
+    #[error(transparent)]
+    PotPlugin(#[from] PotPluginError),
     #[error("subtitle pipeline failed: {0}")]
     SubtitlePipeline(String),
 }
@@ -109,11 +111,15 @@ impl DownloadService {
             .iter()
             .find(|preset| preset.id == request.preset_id)
             .is_some_and(|preset| preset.requires_pot_server);
-        if requires_pot {
+        let plugin_dirs = if requires_pot {
+            let plugin_dir = pot_plugin::ensure_extracted()?;
             self.pot_server.ensure_started().await?;
-        }
+            vec![plugin_dir]
+        } else {
+            Vec::new()
+        };
         let runner = YtDlpRunner::from_environment_or_bundle()?
-            .with_plugin_dirs(request.plugin_dirs)
+            .with_plugin_dirs(plugin_dirs)
             .with_cancellation(cancellation);
         let event_sender = events.clone();
         let on_chunk = move |stream, chunk: &str| {
