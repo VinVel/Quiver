@@ -1372,7 +1372,7 @@ fn draw_overlay(frame: &mut Frame<'_>, app: &mut App, color: Color) {
 fn license_text() -> &'static String {
     static TEXT: OnceLock<String> = OnceLock::new();
     TEXT.get_or_init(|| {
-        let html = include_str!("../src-tauri/license.html");
+        let html = include_str!("../licenses/third-party.html");
         let body = html.split_once("<body>").map_or(html, |(_, body)| body);
         let mut text = String::new();
         let mut tag = String::new();
