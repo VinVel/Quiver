@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use ansi_to_tui::IntoText;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -25,7 +26,7 @@ use ratatui_kit::{
         self, Frame,
         layout::{Alignment, Constraint, Direction, Layout, Rect},
         style::{Color, Modifier, Style},
-        text::{Line, Span},
+        text::{Line, Span, Text},
         widgets::{Block, Borders, Paragraph, Wrap},
     },
 };
@@ -61,6 +62,12 @@ enum Overlay {
     Licenses,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputScrollMode {
+    Follow,
+    Paused,
+}
+
 struct App {
     settings: SettingsStore,
     service: Arc<DownloadService>,
@@ -75,7 +82,8 @@ struct App {
     advanced: bool,
     preview: Option<PresetCommandPreview>,
     output: String,
-    output_scroll: u16,
+    output_scroll: usize,
+    output_scroll_mode: OutputScrollMode,
     preview_scroll: u16,
     output_list: ListState,
     overlay_list: ListState,
@@ -108,6 +116,7 @@ impl App {
             preview: None,
             output: String::new(),
             output_scroll: 0,
+            output_scroll_mode: OutputScrollMode::Follow,
             preview_scroll: 0,
             output_list: ListState::default(),
             overlay_list: ListState::default(),
@@ -184,6 +193,7 @@ impl App {
         self.running = true;
         self.output.clear();
         self.output_scroll = 0;
+        self.output_scroll_mode = OutputScrollMode::Follow;
         self.output_list = ListState::default();
         self.status = "Downloading... Press Ctrl+X to cancel.".into();
     }
@@ -203,9 +213,17 @@ impl App {
                     if self.output.len() > OUTPUT_LIMIT {
                         let cut = self.output.len() - OUTPUT_LIMIT;
                         let boundary = self.output.ceil_char_boundary(cut);
+                        let removed_lines = self.output[..boundary]
+                            .bytes()
+                            .filter(|byte| *byte == b'\n')
+                            .count();
                         self.output.drain(..boundary);
+                        self.output_scroll = self.output_scroll.saturating_sub(removed_lines);
                     }
-                    self.output_scroll = u16::MAX;
+                    if self.output_scroll_mode == OutputScrollMode::Follow {
+                        self.output_scroll = self.output.lines().count().saturating_sub(1);
+                        self.output_list = ListState::default();
+                    }
                 }
                 DownloadEvent::Finished { success, exit_code } => {
                     self.running = false;
@@ -524,6 +542,23 @@ impl App {
         }
     }
 
+    fn scroll_output(&mut self, amount: i32) {
+        let last = self.output.lines().count().saturating_sub(1);
+        let current = if self.output_scroll_mode == OutputScrollMode::Follow {
+            last
+        } else {
+            self.output_scroll.min(last)
+        };
+        self.output_scroll = current.saturating_add_signed(amount as isize).min(last);
+        self.output_scroll_mode = if self.output_scroll == last {
+            OutputScrollMode::Follow
+        } else {
+            OutputScrollMode::Paused
+        };
+        // A fresh viewport makes each wheel step move visible text immediately.
+        self.output_list = ListState::default();
+    }
+
     fn on_mouse(&mut self, event: MouseEvent, area: Rect) {
         if self.overlay != Overlay::None {
             match event.kind {
@@ -554,7 +589,7 @@ impl App {
             if contains(regions.preview, event.column, event.row) {
                 Self::scroll_value(&mut self.preview_scroll, amount);
             } else if contains(regions.output, event.column, event.row) {
-                Self::scroll_value(&mut self.output_scroll, amount);
+                self.scroll_output(amount);
             }
             return;
         }
@@ -1400,18 +1435,28 @@ fn draw_output(frame: &mut Frame<'_>, app: &mut App, area: Rect, color: Color) {
         &app.output
     };
     let lines: Vec<&str> = text.lines().collect();
-    let selected = usize::from(app.output_scroll).min(lines.len().saturating_sub(1));
+    let selected = app.output_scroll.min(lines.len().saturating_sub(1));
     app.output_list.select(Some(selected));
     let border = subtle(app);
-    render_virtual_text(
-        frame,
-        area,
-        "Command Output",
-        color,
-        border,
-        &lines,
-        &mut app.output_list,
-    );
+    let builder = ListBuilder::new(|context| {
+        let line = lines[context.index];
+        let parsed = line
+            .as_bytes()
+            .into_text()
+            .unwrap_or_else(|_| Text::raw(line.to_owned()));
+        let plain = parsed
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<String>();
+        let width = usize::from(context.cross_axis_size.max(1));
+        let height = u16::try_from(textwrap::wrap(&plain, width).len().max(1)).unwrap_or(u16::MAX);
+        (Paragraph::new(parsed).wrap(Wrap { trim: false }), height)
+    });
+    let list = ListView::new(builder, lines.len())
+        .infinite_scrolling(false)
+        .block(panel("Command Output", false, color, border));
+    frame.render_stateful_widget(list, area, &mut app.output_list);
 }
 
 // Ratatui Kit's VirtualList uses this same windowed list renderer. Building only
@@ -1674,6 +1719,69 @@ mod tests {
                 .all(|(_, card)| card.height == cards[0].1.height)
         );
         assert!(cards.last().expect("last card").1.bottom() <= 35);
+    }
+
+    #[test]
+    fn output_mouse_wheel_moves_visible_viewport() {
+        let temp = tempfile::tempdir().expect("temporary settings");
+        let mut app = App::new(SettingsStore::new(temp.path().to_path_buf()));
+        app.output = "line\n".repeat(100);
+        app.output_scroll = 99;
+        let screen = Rect::new(0, 0, 160, 45);
+        let mut terminal =
+            Terminal::new(TestBackend::new(screen.width, screen.height)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw output");
+        let before = app.output_list.scroll_offset_index();
+        let output = screen_regions(screen, app.focus).output;
+        app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: output.x + 2,
+                row: output.y + 2,
+                modifiers: KeyModifiers::NONE,
+            },
+            screen,
+        );
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw scrolled output");
+        assert_eq!(app.output_scroll, 96);
+        assert!(app.output_list.scroll_offset_index() < before);
+
+        let (sender, receiver) = mpsc::unbounded_channel();
+        app.events = Some(receiver);
+        sender
+            .send(DownloadEvent::Output {
+                stream: quiver_lib::yt_dlp::YtDlpOutputStream::Stdout,
+                chunk: "new line\n".into(),
+            })
+            .expect("send output");
+        app.drain_events();
+        assert_eq!(app.output_scroll, 96);
+        assert_eq!(app.output_scroll_mode, OutputScrollMode::Paused);
+    }
+
+    #[test]
+    fn output_renders_ansi_colors() {
+        let temp = tempfile::tempdir().expect("temporary settings");
+        let mut app = App::new(SettingsStore::new(temp.path().to_path_buf()));
+        app.output = "\x1b[31mRED\x1b[0m\n".into();
+        let screen = Rect::new(0, 0, 160, 45);
+        let mut terminal =
+            Terminal::new(TestBackend::new(screen.width, screen.height)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw colored output");
+        let output = screen_regions(screen, app.focus).output;
+        let cell = terminal
+            .backend()
+            .buffer()
+            .cell((output.x + 1, output.y + 1))
+            .expect("first output cell");
+        assert_eq!(cell.symbol(), "R");
+        assert_eq!(cell.fg, Color::Red);
     }
 
     #[test]

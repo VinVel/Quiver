@@ -106,7 +106,7 @@ impl YtDlpRunner {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        self.run_streaming(args, |_, _| {}).await
+        self.run_streaming_impl(args, |_, _| {}, false).await
     }
 
     /// Run yt-dlp and forward stdout/stderr chunks to the caller.
@@ -123,12 +123,30 @@ impl YtDlpRunner {
         S: AsRef<OsStr>,
         F: Fn(YtDlpOutputStream, &str) + Send + Sync + 'static,
     {
+        self.run_streaming_impl(args, on_chunk, true).await
+    }
+
+    async fn run_streaming_impl<I, S, F>(
+        &self,
+        args: I,
+        on_chunk: F,
+        color_output: bool,
+    ) -> Result<YtDlpCommandOutput, YtDlpError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+        F: Fn(YtDlpOutputStream, &str) + Send + Sync + 'static,
+    {
         if self.cancellation.is_cancelled() {
             return Err(YtDlpError::Cancelled);
         }
         let mut command = Command::new(&self.binary_path);
+        let mut command_args = self.command_args(args)?;
+        if color_output && !has_option(&command_args, "--color") {
+            command_args.extend(["--color".to_owned(), "always".to_owned()]);
+        }
         command
-            .args(self.command_args(args)?)
+            .args(command_args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -513,6 +531,20 @@ mod tests {
         drop(observed);
         assert_eq!(stdout, output.stdout);
         assert_eq!(stderr, output.stderr);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn streaming_requests_color_but_collected_output_does_not() {
+        let (_directory, path) = fake_sidecar("#!/bin/sh\nprintf '%s\\n' \"$@\"\n");
+        let runner = YtDlpRunner::from_binary(path, false);
+        let streamed = runner
+            .run_streaming(["--version"], |_, _| {})
+            .await
+            .expect("streaming output");
+        assert!(streamed.stdout.contains("--color\nalways\n"));
+        let collected = runner.run(["--version"]).await.expect("collected output");
+        assert!(!collected.stdout.contains("--color"));
     }
 
     #[cfg(unix)]
