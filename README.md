@@ -41,22 +41,26 @@ system installation.
 
 ## Use
 
-Run `quiver` in a terminal. Paste a URL, pick a preset, adjust the save directory
+Run `quiver` in a terminal. Paste a URL, click a preset, adjust the save directory
 and cookies file if needed, then press Enter to prepare and Ctrl+R to run.
 The command preview updates when inputs change. Press F1 for the full key list.
 
 | Key | Action |
 | --- | --- |
-| Tab / Shift+Tab | Move between fields and panels |
 | F2 / F3 | Edit save directory / cookies file |
-| Ctrl+↑ / Ctrl+↓ | Change preset |
-| Ctrl+← / Ctrl+→ | Change color theme |
-| Ctrl+Space | Toggle advanced subtitles |
+| Tab | Accept a save directory suggestion |
+| Ctrl+A | Select all text in the focused field |
+| Shift+← / Shift+→ | Select text |
+| Ctrl+← / Ctrl+→ | Move by word in a field |
+| Ctrl+Backspace / Ctrl+Delete | Delete a word in a field |
 | Ctrl+P | Prepare the command |
 | Ctrl+R | Run the previewed command |
 | Ctrl+X | Cancel the current download |
 | Ctrl+L | View third-party licenses |
 | Ctrl+C | Quit |
+
+Use the mouse to select presets, colors, display mode, and subtitle conversion.
+The mouse wheel scrolls command output and licenses.
 
 The advanced subtitle pipeline applies to YouTube video presets. It downloads
 YouTube `srv3` subtitles, converts them with YTSubConverter, then remuxes the

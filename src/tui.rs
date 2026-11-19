@@ -1,5 +1,7 @@
 use std::{
+    fs,
     io::{self, IsTerminal},
+    path::PathBuf,
     sync::{Arc, OnceLock},
     time::Duration,
 };
@@ -21,14 +23,14 @@ use ratatui_kit::{
     components::tui_widget_list::{ListBuilder, ListState, ListView},
     ratatui::{
         self, Frame,
-        layout::{Constraint, Direction, Layout, Rect},
+        layout::{Alignment, Constraint, Direction, Layout, Rect},
         style::{Color, Modifier, Style},
         text::{Line, Span},
         widgets::{Block, Borders, Paragraph, Wrap},
     },
 };
 use tokio::{sync::mpsc, task::JoinHandle};
-use tui_input::{Input, backend::crossterm::EventHandler};
+use tui_input::{Input, InputRequest, backend::crossterm::EventHandler};
 
 const THEMES: [&str; 4] = ["crystal", "ocean", "forest", "sun"];
 const OUTPUT_LIMIT: usize = 100_000;
@@ -42,26 +44,11 @@ enum Focus {
     Advanced,
     Appearance,
     About,
-    Preview,
-    Output,
 }
 
 impl Focus {
-    const ALL: [Self; 9] = [
-        Self::Url,
-        Self::Presets,
-        Self::Directory,
-        Self::Cookies,
-        Self::Advanced,
-        Self::Appearance,
-        Self::About,
-        Self::Preview,
-        Self::Output,
-    ];
-    fn next(self, backward: bool) -> Self {
-        let index = Self::ALL.iter().position(|item| *item == self).unwrap_or(0);
-        Self::ALL[(index + if backward { Self::ALL.len() - 1 } else { 1 }) % Self::ALL.len()]
-    }
+    #[cfg(test)]
+    const ALL: [Self; 4] = [Self::Url, Self::Directory, Self::Cookies, Self::About];
     fn is_input(self) -> bool {
         matches!(self, Self::Url | Self::Directory | Self::Cookies)
     }
@@ -83,6 +70,7 @@ struct App {
     url: Input,
     directory: Input,
     cookies: Input,
+    selection: [Option<usize>; 3],
     theme: ThemePreferences,
     advanced: bool,
     preview: Option<PresetCommandPreview>,
@@ -114,6 +102,7 @@ impl App {
             url: Input::default(),
             directory: Input::new(inputs.directory),
             cookies: Input::new(inputs.cookies_path),
+            selection: [None; 3],
             theme,
             advanced: false,
             preview: None,
@@ -197,7 +186,6 @@ impl App {
         self.output_scroll = 0;
         self.output_list = ListState::default();
         self.status = "Downloading... Press Ctrl+X to cancel.".into();
-        self.focus = Focus::Output;
     }
 
     fn drain_events(&mut self) -> bool {
@@ -272,15 +260,20 @@ impl App {
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.focus.is_input() && self.on_input_key(key) {
+                return;
+            }
             self.on_control_key(key.code);
             return;
         }
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
-                if matches!(self.focus, Focus::Directory | Focus::Cookies) {
-                    self.save_inputs();
+                if key.code == KeyCode::Tab
+                    && self.focus == Focus::Directory
+                    && self.accept_directory_completion()
+                {
+                    return;
                 }
-                self.focus = self.focus.next(key.code == KeyCode::BackTab);
                 return;
             }
             KeyCode::F(1) => {
@@ -292,6 +285,7 @@ impl App {
                 if matches!(self.focus, Focus::Directory | Focus::Cookies) {
                     self.save_inputs();
                 }
+                self.clear_selection();
                 self.focus = Focus::Directory;
                 return;
             }
@@ -299,6 +293,7 @@ impl App {
                 if matches!(self.focus, Focus::Directory | Focus::Cookies) {
                     self.save_inputs();
                 }
+                self.clear_selection();
                 self.focus = Focus::Cookies;
                 return;
             }
@@ -312,8 +307,8 @@ impl App {
                     self.save_inputs();
                     self.status = "Inputs saved.".into();
                 }
-            } else if self.input_mut().handle_event(&Event::Key(key)).is_some() {
-                self.refresh_preview();
+            } else {
+                self.on_input_key(key);
             }
             return;
         }
@@ -332,18 +327,7 @@ impl App {
                 self.service.cancel();
                 self.status = "Cancelling download...".into();
             }
-            KeyCode::Up => self.move_selection(-1),
-            KeyCode::Down => self.move_selection(1),
-            KeyCode::PageUp => self.scroll(-10),
-            KeyCode::PageDown => self.scroll(10),
-            KeyCode::Home => self.set_scroll(0),
-            KeyCode::End => self.set_scroll(u16::MAX),
-            KeyCode::Enter if self.focus == Focus::Presets => self.prepare(),
             KeyCode::Enter if self.focus == Focus::About => self.open_licenses(),
-            KeyCode::Left if self.focus == Focus::Appearance => self.cycle_theme(-1),
-            KeyCode::Right if self.focus == Focus::Appearance => self.cycle_theme(1),
-            KeyCode::Char(' ') if self.focus == Focus::Appearance => self.cycle_mode(),
-            KeyCode::Char(' ') if self.focus == Focus::Advanced => self.toggle_advanced(),
             _ => {}
         }
     }
@@ -357,11 +341,6 @@ impl App {
                 self.status = "Cancelling download...".into();
             }
             KeyCode::Char('c') => self.quit = true,
-            KeyCode::Up => self.select_preset(-1),
-            KeyCode::Down => self.select_preset(1),
-            KeyCode::Left => self.cycle_theme(-1),
-            KeyCode::Right => self.cycle_theme(1),
-            KeyCode::Char(' ' | '\0') => self.toggle_advanced(),
             KeyCode::Char('l') => self.open_licenses(),
             _ => {}
         }
@@ -375,20 +354,127 @@ impl App {
             _ => unreachable!(),
         }
     }
-    fn move_selection(&mut self, direction: i32) {
+    fn input(&self) -> &Input {
         match self.focus {
-            Focus::Presets => self.select_preset(direction),
-            Focus::Preview | Focus::Output => self.scroll(direction),
-            _ => {}
+            Focus::Url => &self.url,
+            Focus::Directory => &self.directory,
+            Focus::Cookies => &self.cookies,
+            _ => unreachable!(),
         }
     }
-    fn select_preset(&mut self, direction: i32) {
-        let index = if direction < 0 {
-            self.selected.saturating_sub(1)
-        } else {
-            (self.selected + 1).min(self.presets.len() - 1)
+    fn selection_index(&self) -> usize {
+        match self.focus {
+            Focus::Url => 0,
+            Focus::Directory => 1,
+            Focus::Cookies => 2,
+            _ => unreachable!(),
+        }
+    }
+    fn clear_selection(&mut self) {
+        self.selection = [None; 3];
+    }
+    fn selected_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection[self.selection_index()]?;
+        let cursor = self.input().cursor();
+        (anchor != cursor).then_some((anchor.min(cursor), anchor.max(cursor)))
+    }
+    fn replace_selection(&mut self, replacement: &str) -> bool {
+        let Some((start, end)) = self.selected_range() else {
+            return false;
         };
-        self.select_preset_index(index);
+        let input = self.input();
+        let value = input.value();
+        let start_byte = char_byte(value, start);
+        let end_byte = char_byte(value, end);
+        let mut updated = String::with_capacity(value.len() + replacement.len());
+        updated.push_str(&value[..start_byte]);
+        updated.push_str(replacement);
+        updated.push_str(&value[end_byte..]);
+        *self.input_mut() = Input::new(updated).with_cursor(start + replacement.chars().count());
+        self.clear_selection();
+        self.refresh_preview();
+        true
+    }
+    fn on_input_key(&mut self, key: KeyEvent) -> bool {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        if control && key.code == KeyCode::Char('a') {
+            self.selection[self.selection_index()] = Some(0);
+            self.input_mut().handle(InputRequest::GoToEnd);
+            return true;
+        }
+        if control && matches!(key.code, KeyCode::Backspace | KeyCode::Char('h' | 'w')) {
+            if !self.replace_selection("") {
+                self.input_mut().handle(InputRequest::DeletePrevWord);
+                self.refresh_preview();
+            }
+            return true;
+        }
+        if matches!(
+            key.code,
+            KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
+        ) {
+            let cursor = self.input().cursor();
+            let index = self.selection_index();
+            if !shift
+                && !control
+                && matches!(key.code, KeyCode::Left | KeyCode::Right)
+                && let Some((start, end)) = self.selected_range()
+            {
+                self.input_mut()
+                    .handle(InputRequest::SetCursor(if key.code == KeyCode::Left {
+                        start
+                    } else {
+                        end
+                    }));
+                self.selection[index] = None;
+                return true;
+            }
+            if shift && self.selection[index].is_none() {
+                self.selection[index] = Some(cursor);
+            } else if !shift {
+                self.selection[index] = None;
+            }
+            let request = match key.code {
+                KeyCode::Left if control => InputRequest::GoToPrevWord,
+                KeyCode::Right if control => InputRequest::GoToNextWord,
+                KeyCode::Left => InputRequest::GoToPrevChar,
+                KeyCode::Right => InputRequest::GoToNextChar,
+                KeyCode::Home => InputRequest::GoToStart,
+                KeyCode::End => InputRequest::GoToEnd,
+                _ => unreachable!(),
+            };
+            self.input_mut().handle(request);
+            return true;
+        }
+        if matches!(key.code, KeyCode::Backspace | KeyCode::Delete) && self.replace_selection("") {
+            return true;
+        }
+        if let KeyCode::Char(character) = key.code
+            && !control
+            && self.selected_range().is_some()
+        {
+            return self.replace_selection(&character.to_string());
+        }
+        let changed = self.input_mut().handle_event(&Event::Key(key));
+        if let Some(changed) = changed {
+            if changed.value {
+                self.clear_selection();
+                self.refresh_preview();
+            }
+            return true;
+        }
+        false
+    }
+    fn accept_directory_completion(&mut self) -> bool {
+        let Some(suffix) = directory_completion(&self.directory) else {
+            return false;
+        };
+        let updated = format!("{}{}", self.directory.value(), suffix);
+        self.directory = Input::new(updated);
+        self.clear_selection();
+        self.refresh_preview();
+        true
     }
     fn select_preset_index(&mut self, index: usize) {
         self.selected = index.min(self.presets.len() - 1);
@@ -408,35 +494,12 @@ impl App {
         self.overlay = Overlay::Licenses;
         self.overlay_scroll = 0;
     }
-    fn scroll(&mut self, amount: i32) {
-        let value = if self.focus == Focus::Preview {
-            &mut self.preview_scroll
-        } else {
-            &mut self.output_scroll
-        };
-        Self::scroll_value(value, amount);
-    }
     fn scroll_value(value: &mut u16, amount: i32) {
         *value = if amount < 0 {
             value.saturating_sub(u16::try_from(amount.unsigned_abs()).unwrap_or(u16::MAX))
         } else {
             value.saturating_add(u16::try_from(amount).unwrap_or(u16::MAX))
         };
-    }
-    fn set_scroll(&mut self, value: u16) {
-        match self.focus {
-            Focus::Preview => self.preview_scroll = value,
-            Focus::Output => self.output_scroll = value,
-            _ => {}
-        }
-    }
-    fn cycle_theme(&mut self, direction: i32) {
-        let index = THEMES
-            .iter()
-            .position(|item| *item == self.theme.preset)
-            .unwrap_or(0);
-        let next = (index + if direction < 0 { THEMES.len() - 1 } else { 1 }) % THEMES.len();
-        self.set_theme(next);
     }
     fn set_theme(&mut self, index: usize) {
         let supported = THEMES.map(str::to_owned);
@@ -501,6 +564,7 @@ impl App {
         if matches!(self.focus, Focus::Directory | Focus::Cookies) {
             self.save_inputs();
         }
+        self.clear_selection();
         if contains(regions.url, event.column, event.row) {
             self.focus = Focus::Url;
             return;
@@ -562,6 +626,70 @@ impl App {
             u16::try_from(overlay_lines(self.overlay).len().saturating_sub(1)).unwrap_or(u16::MAX);
         self.overlay_scroll = self.overlay_scroll.min(self.overlay_max_scroll);
     }
+}
+
+fn char_byte(value: &str, position: usize) -> usize {
+    value
+        .char_indices()
+        .nth(position)
+        .map_or(value.len(), |(byte, _)| byte)
+}
+
+fn directory_completion(input: &Input) -> Option<String> {
+    let value = input.value();
+    if value.is_empty() || input.cursor() != value.chars().count() {
+        return None;
+    }
+    let separator = value.rfind(['/', '\\']);
+    let (parent, prefix) = separator.map_or((".", value), |index| {
+        (&value[..=index], &value[index + 1..])
+    });
+    let expanded = if parent == "~/" {
+        BaseDirs::new()?.home_dir().to_path_buf()
+    } else if let Some(rest) = parent.strip_prefix("~/") {
+        BaseDirs::new()?.home_dir().join(rest)
+    } else {
+        PathBuf::from(parent)
+    };
+    let mut matches = fs::read_dir(expanded)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(prefix))
+        .collect::<Vec<_>>();
+    matches.sort_unstable();
+    let name = matches.first()?;
+    let suffix = name.strip_prefix(prefix)?;
+    Some(format!("{suffix}{}", std::path::MAIN_SEPARATOR))
+}
+
+fn input_line(
+    input: &Input,
+    selection: Option<(usize, usize)>,
+    suggestion: Option<&str>,
+) -> Line<'static> {
+    let value = input.value();
+    let mut spans = Vec::new();
+    if let Some((start, end)) = selection {
+        let start = char_byte(value, start);
+        let end = char_byte(value, end);
+        spans.push(Span::raw(value[..start].to_owned()));
+        spans.push(Span::styled(
+            value[start..end].to_owned(),
+            Style::default().add_modifier(Modifier::REVERSED),
+        ));
+        spans.push(Span::raw(value[end..].to_owned()));
+    } else {
+        spans.push(Span::raw(value.to_owned()));
+    }
+    if let Some(suffix) = suggestion {
+        spans.push(Span::styled(
+            suffix.to_owned(),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    Line::from(spans)
 }
 
 struct TerminalGuard;
@@ -771,8 +899,6 @@ fn screen_regions(area: Rect, focus: Focus) -> ScreenRegions {
             Focus::Directory | Focus::Cookies => regions.inputs = page[1],
             Focus::Appearance => regions.appearance = page[1],
             Focus::About => regions.about = page[1],
-            Focus::Preview => regions.preview = page[1],
-            Focus::Output => regions.output = page[1],
         }
     }
     regions
@@ -816,14 +942,13 @@ fn preset_cards(area: Rect, selected: usize) -> Vec<(usize, Rect)> {
         .map(|(position, index)| {
             let position = u16::try_from(position).unwrap_or(0);
             let y = inner.y + position * card_height + position.min(extra);
-            let height = card_height + u16::from(position < extra);
             (
                 index,
                 Rect {
                     x: inner.x,
                     y,
                     width: inner.width,
-                    height,
+                    height: card_height,
                 },
             )
         })
@@ -900,12 +1025,8 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if regions.output.width > 0 {
         draw_output(frame, app, regions.output, color);
     }
-    let footer = format!(
-        "{} | F2/F3: edit paths · Ctrl+↑↓: preset · Ctrl+←→: theme · Ctrl+Space: subs · F1: help",
-        app.status
-    );
     frame.render_widget(
-        Paragraph::new(footer)
+        Paragraph::new(app.status.as_str())
             .style(Style::default().fg(color))
             .wrap(Wrap { trim: true }),
         regions.footer,
@@ -929,9 +1050,14 @@ fn draw_url(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
     };
     frame.render_widget(
         Paragraph::new(if app.url.value().is_empty() {
-            "Paste a URL to preview a download"
+            Line::from("Paste a URL to preview a download")
         } else {
-            app.url.value()
+            input_line(
+                &app.url,
+                app.selection[0]
+                    .map(|anchor| (anchor.min(app.url.cursor()), anchor.max(app.url.cursor()))),
+                None,
+            )
         })
         .style(if app.url.value().is_empty() {
             Style::default().fg(muted(app))
@@ -956,12 +1082,7 @@ fn draw_url(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
 
 fn draw_presets(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
     frame.render_widget(
-        panel(
-            "Presets · Ctrl+↑↓",
-            app.focus == Focus::Presets,
-            color,
-            subtle(app),
-        ),
+        panel("Presets", app.focus == Focus::Presets, color, subtle(app)),
         area,
     );
     for (index, rect) in preset_cards(area, app.selected) {
@@ -975,32 +1096,11 @@ fn draw_presets(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
         } else {
             Style::default()
         };
-        let media = if matches!(preset.media, presets::PresetMedia::Audio) {
-            "Audio"
-        } else {
-            "Video"
-        };
-        let cookies = if preset.uses_cookies {
-            "with Cookies"
-        } else {
-            "no Cookies"
-        };
-        let text = if rect.height >= 4 {
-            vec![
-                Line::from(format!(
-                    "{} {}",
-                    if selected { "▶" } else { " " },
-                    preset.label
-                )),
-                Line::from(format!("  {media} · {cookies}")),
-            ]
-        } else {
-            vec![Line::from(format!(
-                "{} {}",
-                if selected { "▶" } else { " " },
-                preset.label
-            ))]
-        };
+        let text = Line::from(format!(
+            "{} {}",
+            if selected { "▶" } else { " " },
+            preset.label
+        ));
         frame.render_widget(
             Paragraph::new(text).style(card_style).block(
                 Block::default()
@@ -1020,7 +1120,7 @@ fn draw_advanced(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
     let available = presets::is_youtube_video_preset(app.presets[app.selected].id);
     let text = if available {
         format!(
-            "[{}] Advanced subtitles (Ctrl+Space)",
+            "[{}] Advanced subtitles",
             if app.advanced { "x" } else { " " }
         )
     } else {
@@ -1046,7 +1146,7 @@ fn draw_advanced(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
 fn draw_inputs(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
     frame.render_widget(
         panel(
-            "Inputs · click a field or use Tab",
+            "Inputs",
             matches!(app.focus, Focus::Directory | Focus::Cookies),
             color,
             subtle(app),
@@ -1054,32 +1154,40 @@ fn draw_inputs(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
         area,
     );
     let rows = input_rows(area);
+    let directory_suggestion = (app.focus == Focus::Directory)
+        .then(|| directory_completion(&app.directory))
+        .flatten();
     let directory_scroll = if app.focus == Focus::Directory {
-        app.directory
-            .visual_scroll(usize::from(rows[1].width.saturating_sub(2)))
+        directory_input_scroll(
+            &app.directory,
+            rows[1].width,
+            directory_suggestion.as_deref(),
+        )
     } else {
         0
     };
-    let cookies_scroll = if app.focus == Focus::Cookies {
-        app.cookies
-            .visual_scroll(usize::from(rows[4].width.saturating_sub(2)))
-    } else {
-        0
-    };
+    let cookies_scroll = usize::from(app.focus == Focus::Cookies)
+        * app
+            .cookies
+            .visual_scroll(usize::from(rows[4].width.saturating_sub(2)));
     frame.render_widget(
         Paragraph::new("SAVE DIRECTORY")
             .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
         rows[0],
     );
     frame.render_widget(
-        Paragraph::new(app.directory.value())
-            .scroll((0, u16::try_from(directory_scroll).unwrap_or(u16::MAX)))
-            .block(panel(
-                "edit · Enter saves",
-                app.focus == Focus::Directory,
-                color,
-                subtle(app),
-            )),
+        Paragraph::new(input_line(
+            &app.directory,
+            app.selection[1].map(|anchor| {
+                (
+                    anchor.min(app.directory.cursor()),
+                    anchor.max(app.directory.cursor()),
+                )
+            }),
+            directory_suggestion.as_deref(),
+        ))
+        .scroll((0, u16::try_from(directory_scroll).unwrap_or(u16::MAX)))
+        .block(panel("", app.focus == Focus::Directory, color, subtle(app))),
         rows[1],
     );
     frame.render_widget(
@@ -1092,14 +1200,18 @@ fn draw_inputs(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
         rows[3],
     );
     frame.render_widget(
-        Paragraph::new(app.cookies.value())
-            .scroll((0, u16::try_from(cookies_scroll).unwrap_or(u16::MAX)))
-            .block(panel(
-                "edit · Enter saves",
-                app.focus == Focus::Cookies,
-                color,
-                subtle(app),
-            )),
+        Paragraph::new(input_line(
+            &app.cookies,
+            app.selection[2].map(|anchor| {
+                (
+                    anchor.min(app.cookies.cursor()),
+                    anchor.max(app.cookies.cursor()),
+                )
+            }),
+            None,
+        ))
+        .scroll((0, u16::try_from(cookies_scroll).unwrap_or(u16::MAX)))
+        .block(panel("", app.focus == Focus::Cookies, color, subtle(app))),
         rows[4],
     );
     frame.render_widget(
@@ -1123,10 +1235,19 @@ fn draw_inputs(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
     }
 }
 
+fn directory_input_scroll(input: &Input, width: u16, suggestion: Option<&str>) -> usize {
+    let reserve = suggestion.map_or(0, |suffix| suffix.chars().count().min(12));
+    input.visual_scroll(
+        usize::from(width.saturating_sub(2))
+            .saturating_sub(reserve)
+            .max(1),
+    )
+}
+
 fn draw_appearance(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
     frame.render_widget(
         panel(
-            "Appearance · Ctrl+←→ theme",
+            "Appearance",
             app.focus == Focus::Appearance,
             color,
             subtle(app),
@@ -1159,21 +1280,26 @@ fn draw_appearance(frame: &mut Frame<'_>, app: &App, area: Rect, color: Color) {
             _ => (Color::Rgb(180, 143, 38), Color::Black),
         };
         frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(capitalize(name)),
-                Line::from(if selected { "● active" } else { "○" }),
-            ])
-            .style(Style::default().fg(foreground).bg(background))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(if selected {
-                        Style::default().fg(Color::White)
-                    } else {
-                        Style::default().fg(subtle(app))
-                    }),
-            ),
+            Block::default()
+                .style(Style::default().bg(background))
+                .borders(Borders::ALL)
+                .border_style(if selected {
+                    Style::default().fg(Color::White)
+                } else {
+                    Style::default().fg(subtle(app))
+                }),
             rect,
+        );
+        frame.render_widget(
+            Paragraph::new(capitalize(name))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(foreground).bg(background)),
+            Rect {
+                x: rect.x.saturating_add(1),
+                y: rect.y.saturating_add(rect.height / 2),
+                width: rect.width.saturating_sub(2),
+                height: u16::from(rect.height > 2),
+            },
         );
     }
     let mode_area = appearance_mode_row(area);
@@ -1280,7 +1406,7 @@ fn draw_output(frame: &mut Frame<'_>, app: &mut App, area: Rect, color: Color) {
     render_virtual_text(
         frame,
         area,
-        "Command Output · ↑↓ scroll",
+        "Command Output",
         color,
         border,
         &lines,
@@ -1324,7 +1450,7 @@ fn overlay_source(overlay: Overlay) -> Option<(&'static str, &'static str)> {
     match overlay {
         Overlay::Help => Some((
             "Help",
-            "Tab / Shift+Tab  Move between fields and panels\nClick              Focus a field, preset, color, or button\nF2 / F3           Edit save directory / cookies file\nEnter              Prepare URL or preset; save paths\nCtrl+↑ / Ctrl+↓   Change preset from any field\nCtrl+← / Ctrl+→   Change color theme from any field\nCtrl+Space        Toggle advanced subtitles\nCtrl+P             Prepare command\nCtrl+R             Run previewed command\nCtrl+X             Cancel current download\nCtrl+L             Open licenses\nF1                 Open help\nCtrl+C             Quit\nEsc                Close this window\n\nYouTube video presets offer advanced subtitle conversion.\nThe preview updates as inputs change.",
+            "Click              Focus a field; choose preset, subtitles, color, or mode\nMouse wheel       Scroll command output and licenses\nF2 / F3           Edit save directory / cookies file\nTab               Accept directory suggestion\nCtrl+A             Select all text in the current field\nShift+← / →       Select text; Ctrl+← / → moves by word\nCtrl+Backspace    Delete previous word\nCtrl+Delete       Delete next word\nEnter             Prepare URL; save paths\nCtrl+P             Prepare command\nCtrl+R             Run previewed command\nCtrl+X             Cancel current download\nCtrl+L             Open licenses\nF1                 Open help\nCtrl+C             Quit\nEsc                Close this window\n\nYouTube video presets offer advanced subtitle conversion.\nThe preview updates as inputs change.",
         )),
         Overlay::Licenses => Some(("Licenses · Esc to close", license_text().as_str())),
         Overlay::None => None,
@@ -1464,19 +1590,90 @@ mod tests {
     }
 
     #[test]
-    fn control_shortcuts_work_while_url_is_focused() {
+    fn selection_shortcuts_work_while_url_is_focused() {
         let temp = tempfile::tempdir().expect("temporary settings");
         let mut app = App::new(SettingsStore::new(temp.path().to_path_buf()));
-        app.url = Input::new("https://example.com/video".into());
+        app.url = Input::new("one two three".into());
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
-        assert_eq!(app.selected, 1);
-        app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
-        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        assert!(app.advanced);
+        assert_eq!(app.selected, 0);
         let old_theme = app.theme.preset.clone();
         app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
-        assert_ne!(app.theme.preset, old_theme);
-        assert_eq!(app.url.value(), "https://example.com/video");
+        assert_eq!(app.theme.preset, old_theme);
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        assert_eq!(app.selected_range(), Some((0, 13)));
+        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.url.value(), "x");
+        app.url = Input::new("one two three".into()).with_cursor(4);
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        assert_eq!(app.selected_range(), Some((4, 5)));
+        app.on_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(app.url.value(), "one wo three");
+        app.on_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::CONTROL));
+        assert_eq!(app.url.value(), "one three");
+    }
+
+    #[test]
+    fn tab_only_accepts_directory_completion() {
+        let temp = tempfile::tempdir().expect("temporary settings");
+        std::fs::create_dir(temp.path().join("Videos")).expect("directory");
+        let mut app = App::new(SettingsStore::new(temp.path().to_path_buf()));
+        app.focus = Focus::Directory;
+        app.directory = Input::new(format!("{}/Vid", temp.path().display()));
+        assert_eq!(
+            directory_completion(&app.directory).as_deref(),
+            Some("eos/")
+        );
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(app.directory.value().ends_with("Videos/"));
+        assert_eq!(app.focus, Focus::Directory);
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.focus, Focus::Directory);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_completion_follows_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("temporary directories");
+        let real = temp.path().join("real");
+        std::fs::create_dir(&real).expect("real directory");
+        std::fs::create_dir(real.join("Movies")).expect("child directory");
+        symlink(&real, temp.path().join("shortcut")).expect("directory symlink");
+
+        let linked_parent = Input::new(format!("{}/shortcut/Mo", temp.path().display()));
+        assert_eq!(
+            directory_completion(&linked_parent).as_deref(),
+            Some("vies/")
+        );
+        let linked_match = Input::new(format!("{}/sho", temp.path().display()));
+        assert_eq!(
+            directory_completion(&linked_match).as_deref(),
+            Some("rtcut/")
+        );
+    }
+
+    #[test]
+    fn control_backspace_deletes_previous_word() {
+        let temp = tempfile::tempdir().expect("temporary settings");
+        let mut app = App::new(SettingsStore::new(temp.path().to_path_buf()));
+        app.url = Input::new("one two three".into());
+        app.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+        assert!(!app.url.value().contains("three"));
+        app.on_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert!(!app.url.value().contains("two"));
+    }
+
+    #[test]
+    fn preset_cards_have_equal_heights() {
+        let cards = preset_cards(Rect::new(0, 0, 50, 35), 0);
+        assert_eq!(cards.len(), 8);
+        assert!(
+            cards
+                .iter()
+                .all(|(_, card)| card.height == cards[0].1.height)
+        );
+        assert!(cards.last().expect("last card").1.bottom() <= 35);
     }
 
     #[test]
